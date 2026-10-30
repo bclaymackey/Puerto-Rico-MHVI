@@ -1,4 +1,4 @@
-"""Self-hosted email + password authentication for the MHVI-M dashboard.
+"""Self-hosted email + password authentication for the MHVI dashboard.
 
 Modular home for everything auth-related, kept separate from chat/dashboard code
 so it can be navigated, tested, and rolled back independently:

@@ -1,6 +1,7 @@
 import pandas as pd
 
-from data import get_db_connection, ALLOWED_TABLES
+from data import (ALLOWED_TABLES, INDEX_INDICATOR, OVERALL_INDICATOR,
+                  OVERALL_TABLE, get_db_connection, map_year)
 
 
 CATEGORY_DISPLAY_NAMES = {
@@ -28,17 +29,19 @@ def _lookup_fips(conn, municipality: str):
     return df["name"][0], df["fips_code"][0]
 
 
+# Every value is read for the year the map shows (data.map_year), not simply
+# the newest row: several tables have an incomplete newest year, and the
+# report should match what the user sees on the map.
+
 def _fetch_overall(conn, fips):
     df = pd.read_sql(
-        """
+        f"""
         SELECT value
-        FROM Overall_MHVI_M_Score
-        WHERE fips_code = ?
-        ORDER BY year DESC
-        LIMIT 1
+        FROM {OVERALL_TABLE}
+        WHERE fips_code = ? AND indicator_name = ? AND year = ?
         """,
         conn,
-        params=(fips,),
+        params=(fips, OVERALL_INDICATOR, map_year(OVERALL_TABLE, OVERALL_INDICATOR)),
     )
     if df.empty or df["value"][0] is None:
         return None
@@ -50,12 +53,10 @@ def _fetch_category(conn, fips, table):
         f"""
         SELECT value
         FROM {table}
-        WHERE fips_code = ? AND indicator_name = ?
-        ORDER BY year DESC
-        LIMIT 1
+        WHERE fips_code = ? AND indicator_name = ? AND year = ?
         """,
         conn,
-        params=(fips, "Subcategory Index Score"),
+        params=(fips, INDEX_INDICATOR, map_year(table, INDEX_INDICATOR)),
     )
     if df.empty or df["value"][0] is None:
         return None
@@ -63,7 +64,8 @@ def _fetch_category(conn, fips, table):
 
 
 def get_report_data(municipality: str) -> dict:
-    """Return latest-year overall + per-category scores for a municipality.
+    """Return overall + per-category scores for a municipality, for the year
+    the map shows (see data.map_year).
 
     Returns {} if the municipality is unknown. Categories with no data
     are omitted from the result rather than included with a null value,
@@ -83,7 +85,7 @@ def get_report_data(municipality: str) -> dict:
 
         categories = {}
         for table in ALLOWED_TABLES:
-            if table == "Overall_MHVI_M_Score":
+            if table == OVERALL_TABLE:
                 continue
             display = CATEGORY_DISPLAY_NAMES.get(table, table.replace("_", " "))
             value = _fetch_category(conn, fips, table)
@@ -94,6 +96,7 @@ def get_report_data(municipality: str) -> dict:
             "municipality": canonical_name,
             "fips_code": fips,
             "overall_score": overall,
+            "year": map_year(OVERALL_TABLE, OVERALL_INDICATOR),
             "categories": categories,
             "higher_is_more_vulnerable": True,
         }

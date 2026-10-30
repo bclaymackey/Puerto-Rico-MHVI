@@ -1,0 +1,14 @@
+# Store text files with LF line endings in the repository, whatever the
+# editor uses locally (Windows editors write CRLF). Without this, a file saved
+# on Windows shows up as "every line changed".
+* text=auto
+*.py   text eol=lf
+*.md   text eol=lf
+*.css  text eol=lf
+*.txt  text eol=lf
+*.ini  text eol=lf
+Dockerfile text eol=lf
+# binary
+*.db     binary
+*.png    binary
+*.ipynb  text eol=lf

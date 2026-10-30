@@ -6,6 +6,8 @@ import pandas as pd
 
 from data import get_db_connection
 
+from mongodb.client import is_available as mongo_available
+
 from .chat_db import ensure_session, ensure_user
 from .chat_history_manager import (
     build_llm_context,
@@ -55,6 +57,48 @@ _REPORT_KEYWORDS_ES = [
 ]
 
 
+# ── Answers from the dashboard's own data ───────────────────────────────────
+# The dashboard registers one function at startup (MHVIM_Dashboard_App.py →
+# dashboard/chat_bridge.py:answer_question). It is asked first, for every
+# message, and returns one of:
+#   {"kind": "grounded", "text": ..., "transcript": ..., "rows": [...], ...}
+#       a value/statistic question answered from the same numbers the chart
+#       uses, with the rows it used (usability study Exercise 3)
+#   {"kind": "export_chat"}   "export this conversation"
+#   None                      not for it — the normal flow below runs
+# It needs neither MongoDB nor an AI key.
+_DASHBOARD_ANSWERER = None
+
+
+def register_dashboard_answerer(fn) -> None:
+    global _DASHBOARD_ANSWERER
+    _DASHBOARD_ANSWERER = fn
+
+
+def _unavailable_message(language: str) -> str:
+    if language == "es":
+        return ("El asistente de IA no está disponible temporalmente. Las "
+                "preguntas sobre valores del panel — por ejemplo, \"¿Cuál es el "
+                "puntaje general de Arecibo en 2023?\" — sí funcionan.")
+    return ("The AI assistant is temporarily unavailable. Questions about "
+            "values on the dashboard — for example, \"What is Arecibo's "
+            "overall score in 2023?\" — still work.")
+
+
+def _record_turn(session_id, user_id, user_input, reply, language) -> None:
+    """Save a question and its answer to the chat history, if the database is
+    reachable. The answer is shown either way."""
+    if not mongo_available():
+        return
+    try:
+        ensure_user(user_id)
+        ensure_session(session_id, user_id)
+        build_llm_context(session_id, user_input, language=language)
+        save_ai_response(session_id, reply, language)
+    except Exception as e:
+        print(f"[_record_turn] history not saved: {e}")
+
+
 # Server-side, single-process cache. Re-readable: consume_report only pops
 # when a new report replaces it (see _generate_report_response's overwrite).
 # Acceptable for single-worker Dash dev; for multi-worker prod, swap for Redis.
@@ -78,11 +122,13 @@ def _ack_message(municipality: str, language: str, report_data: dict) -> str:
     overall = report_data.get("overall_score")
     categories = report_data.get("categories") or {}
 
+    year = report_data.get("year")
+    in_year = f" ({year})" if year else ""
     if language == "es":
-        lines = [f"Tu informe de {municipality} está listo. Datos utilizados:"]
+        lines = [f"Tu informe de {municipality} está listo. Datos utilizados{in_year}:"]
         overall_label = "General"
     else:
-        lines = [f"Your {municipality} report is ready. Data used:"]
+        lines = [f"Your {municipality} report is ready. Data used{in_year}:"]
         overall_label = "Overall"
 
     if overall is not None:
@@ -91,9 +137,9 @@ def _ack_message(municipality: str, language: str, report_data: dict) -> str:
         lines.append(f"• {name}: {value}")
 
     if language == "es":
-        lines.append("También puedes explorar cada categoría en el mapa usando el menú Categoría.")
+        lines.append("También puedes explorar cada categoría en el mapa usando el menú \"Map Category\".")
     else:
-        lines.append("You can also explore each category on the map using the Category dropdown.")
+        lines.append("You can also explore each category on the map using the \"Map Category\" dropdown.")
 
     return "\n".join(lines)
 
@@ -183,13 +229,42 @@ def process_chat_message(
     language: str = "en",
     session_id: str = "default",
     user_id: str | None = None,
+    dashboard_state: dict | None = None,
 ) -> dict:
     """Return a structured response dict.
 
     Shapes:
-        {"kind": "text",   "text": str}
-        {"kind": "report", "message": str, "report_token": str, "filename": str, ...}
+        {"kind": "text",     "text": str}
+        {"kind": "report",   "message": str, "report_token": str, "filename": str, ...}
+        {"kind": "grounded", "text": str, "rows": [...], ...}   (see above)
+        {"kind": "export_chat", "text": str}
+
+    dashboard_state: what the dashboard is showing (municipalities, indicators,
+    year, display mode), used to answer value questions about it.
     """
+    # Value questions and "export this chat" first — answered from the
+    # dashboard's data, so they work even without MongoDB or an AI key.
+    if _DASHBOARD_ANSWERER is not None:
+        try:
+            special = _DASHBOARD_ANSWERER(user_input, language, dashboard_state)
+        except Exception as e:
+            print(f"[process_chat_message] dashboard answer failed: {e}")
+            special = None
+        if special and special.get("kind") == "export_chat":
+            text = ("Exportando esta conversación como PDF." if language == "es"
+                    else "Exporting this conversation as a PDF.")
+            _record_turn(session_id, user_id, user_input, text, language)
+            return {"kind": "export_chat", "text": text}
+        if special and special.get("kind") == "grounded":
+            _record_turn(session_id, user_id, user_input,
+                         special.get("transcript") or special.get("text", ""),
+                         language)
+            return special
+
+    # Everything below keeps its history in MongoDB.
+    if not mongo_available():
+        return {"kind": "text", "text": _unavailable_message(language)}
+
     # Make sure parent rows exist before any message INSERT.
     ensure_user(user_id)
     ensure_session(session_id, user_id)

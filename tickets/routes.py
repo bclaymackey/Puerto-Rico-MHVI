@@ -148,7 +148,7 @@ def _page(tickets: list, filter_status: str) -> str:
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Tickets — MHVI-M Admin</title>
+<title>Tickets — MHVI Admin</title>
 <style>
   body{{font-family:-apple-system,"Segoe UI",system-ui,sans-serif;background:#f7f8fa;color:#1f2328;margin:0;padding:0}}
   .wrap{{max-width:1100px;margin:32px auto;padding:0 24px}}
@@ -164,7 +164,7 @@ def _page(tickets: list, filter_status: str) -> str:
 <body>
 <div class="wrap">
   <h1>🎫 Support Tickets</h1>
-  <div class="sub">MHVI-M Admin Panel &nbsp;·&nbsp; <a href="/" style="color:#4b0082">← Back to dashboard</a></div>
+  <div class="sub">MHVI Admin Panel &nbsp;·&nbsp; <a href="/" style="color:#4b0082">← Back to dashboard</a></div>
   {tabs}
   <table>
     <thead><tr><th>Date</th><th>Email</th><th>Category</th><th>Subject / Message</th><th>Status</th></tr></thead>
@@ -184,7 +184,17 @@ def register_ticket_routes(server) -> None:
     Also calls _provision_admins() once at startup so ADMIN_EMAILS in .env
     are automatically granted role='admin' without any manual mongosh step.
     """
-    _provision_admins()
+    # Skipped (with a log line) when MongoDB cannot be reached, so a database
+    # outage does not stop the whole site from starting. Admins are provisioned
+    # on the next restart once the database is back.
+    from mongodb.client import is_available
+    if is_available():
+        try:
+            _provision_admins()
+        except Exception as exc:
+            print(f"[tickets] ⚠️  admin provisioning skipped: {exc}")
+    else:
+        print("[tickets] ⚠️  MongoDB unreachable — admin provisioning skipped")
 
     @server.route("/tickets_ui")
     def tickets_ui():

@@ -1,12 +1,27 @@
+# secrets — never commit these (the repository is public)
 .env
+# any copy of it too (".env - Copy", ".env.bak", ...), but keep the template
+.env*
+!.env.example
+
+# Python
 venv/
 .venv/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+.pytest_cache/
+
+# old local chat store (now MongoDB)
 chat/chat.db
 archive/
-.DS_Store
 
+# editor / OS
+.vscode/
+.DS_Store
+Thumbs.db
+
+# scratch notes stay local; documentation is kept
 *.md
 !README.md
+!docs/**/*.md

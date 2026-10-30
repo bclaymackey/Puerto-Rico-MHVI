@@ -14,13 +14,13 @@ with urlopen(
 ) as _resp:
     counties = json.load(_resp)
 
-EXCLUDED_TABLES = frozenset({'municipalities', 'sqlite_sequence', 'Overall_MHVI_M_Score'})
+EXCLUDED_TABLES = frozenset({'municipalities', 'sqlite_sequence', 'Overall_MHVI_Score'})
 ALLOWED_TABLES = frozenset({
     'Economic_Employment', 'Education', 'Food_Water_Basic_Needs',
     'Health_Risk_Behaviors', 'Healthcare_Access', 'Housing',
     'Neighborhood_Built_Environment', 'Social_Relationships_Community',
     'Transportation_Accessibility', 'Trauma_Violence_Adversity',
-    'Overall_MHVI_M_Score'
+    'Overall_MHVI_Score'
 })
 
 
@@ -56,9 +56,9 @@ def load_db_metadata() -> dict:
 
 def fetch_map_data(category: str) -> pd.DataFrame:
     """Return fips_code / name / value for the choropleth map."""
-    if category == 'Overall MHVI-M Score':
-        target_table = 'Overall_MHVI_M_Score'
-        ind = 'Overall MHVI-M Score'
+    if category == 'Overall MHVI Score':
+        target_table = 'Overall_MHVI_Score'
+        ind = 'Overall MHVI Score'
     else:
         target_table = category
         ind = 'Subcategory Index Score'
@@ -144,8 +144,8 @@ def load_data_dictionary() -> pd.DataFrame:
 def query_indicator_table(fips: str, category: str) -> pd.DataFrame:
     """All indicators for one municipality in one category. [indicator_name, year, value]."""
     columns = ['indicator_name', 'year', 'value']
-    if category == 'Overall MHVI-M Score':
-        target = 'Overall_MHVI_M_Score'
+    if category == 'Overall MHVI Score':
+        target = 'Overall_MHVI_Score'
     else:
         target = category
     if target not in ALLOWED_TABLES:
@@ -201,10 +201,10 @@ def query_axis_data(fips: str, cat: str, ind: str) -> pd.DataFrame:
                                   'val': [2018, 2019, 2020, 2021, 2022, 2023, 2024]})
         finally:
             conn.close()
-    elif cat == 'Overall MHVI-M Score':
+    elif cat == 'Overall MHVI Score':
         try:
             return pd.read_sql(
-                "SELECT year, value as val FROM Overall_MHVI_M_Score WHERE fips_code = ?",
+                "SELECT year, value as val FROM Overall_MHVI_Score WHERE fips_code = ?",
                 conn, params=(fips,)
             )
         except Exception:
@@ -224,3 +224,91 @@ def query_axis_data(fips: str, cat: str, ind: str) -> pd.DataFrame:
             return pd.DataFrame(columns=['year', 'val'])
         finally:
             conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Which year the map shows — shared by the dashboard and the AI assistant
+# ---------------------------------------------------------------------------
+# Several tables have an incomplete newest year (Overall 2024 is missing
+# Florida, Education 2024 has 11 of 78 municipalities, Healthcare Access 2025
+# has 52 of 78). The map therefore shows one year that is complete for every
+# category, and the assistant's "latest" answers use the same year, so the two
+# never disagree.
+
+OVERALL_TABLE = 'Overall_MHVI_Score'
+OVERALL_INDICATOR = 'Overall MHVI Score'
+INDEX_INDICATOR = 'Subcategory Index Score'
+
+_YEAR_CACHE = {}
+
+
+def _municipality_count(conn) -> int:
+    return conn.execute("SELECT COUNT(*) FROM municipalities").fetchone()[0]
+
+
+def _complete_years(conn, table: str, indicator: str, n_munis: int) -> set:
+    rows = conn.execute(
+        f"""SELECT year FROM {table}
+            WHERE indicator_name = ? AND value IS NOT NULL
+            GROUP BY year
+            HAVING COUNT(DISTINCT fips_code) >= ?""",
+        (indicator, n_munis)).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+def common_map_year():
+    """Latest year in which the Overall score and every category's index score
+    cover all municipalities, or None if there is no such year. Cached: the
+    database is read-only while the app runs."""
+    if 'common' in _YEAR_CACHE:
+        return _YEAR_CACHE['common']
+    shared = None
+    conn = get_db_connection()
+    try:
+        n = _municipality_count(conn)
+        targets = [(OVERALL_TABLE, OVERALL_INDICATOR)] + [
+            (tbl, INDEX_INDICATOR) for tbl in sorted(load_db_metadata())]
+        for tbl, ind in targets:
+            if tbl not in ALLOWED_TABLES:
+                continue
+            years = _complete_years(conn, tbl, ind, n)
+            shared = years if shared is None else (shared & years)
+    except Exception:
+        shared = None
+    finally:
+        conn.close()
+    _YEAR_CACHE['common'] = max(shared) if shared else None
+    return _YEAR_CACHE['common']
+
+
+def map_year(table: str, indicator: str = INDEX_INDICATOR):
+    """The year the map shows for one table, by the same rule as the map:
+    the common year if this table is complete in it, otherwise this table's
+    latest complete year, otherwise the year with the most municipalities."""
+    key = (table, indicator)
+    if key in _YEAR_CACHE:
+        return _YEAR_CACHE[key]
+    year = None
+    if table in ALLOWED_TABLES:
+        conn = get_db_connection()
+        try:
+            n = _municipality_count(conn)
+            counts = conn.execute(
+                f"""SELECT year, COUNT(DISTINCT fips_code) FROM {table}
+                    WHERE indicator_name = ? AND value IS NOT NULL
+                    GROUP BY year""", (indicator,)).fetchall()
+            counts = [(int(y), int(c)) for y, c in counts]
+            complete = {y for y, c in counts if c >= n}
+            common = common_map_year()
+            if common is not None and common in complete:
+                year = common
+            elif complete:
+                year = max(complete)
+            elif counts:
+                year = max(counts, key=lambda yc: (yc[1], yc[0]))[0]
+        except Exception:
+            year = None
+        finally:
+            conn.close()
+    _YEAR_CACHE[key] = year
+    return year

@@ -1,27 +1,37 @@
 import uuid
 
-from dash import dcc, html, dash_table
+from dash import dcc, html
 
+from auth.policy import login_required
 from tickets.core import CATEGORIES as _TICKET_CATEGORIES
 
 
-def build_layout(global_categories: list, encoded_logo1: str, encoded_logo2: str) -> html.Div:
+def build_layout(dashboard_children) -> html.Div:
+    """The whole page.
+
+    dashboard_children: a function returning the dashboard's components (the
+    map, panel, tables and dialogs — see dashboard/layout.py). It is given the
+    account button to place in the dashboard's header.
+
+    Whether the sign-in page comes first is set by REQUIRE_LOGIN (auth/policy.py).
+    """
+    required = login_required()
     return html.Div([
         # Resolves the auth cookie on load; drives the login gate below.
         dcc.Store(id='chat-user-id'),
-        _build_login_page(),
-        # The whole app is hidden until authenticated; the gate reveals it.
+        # True while a visitor has asked to sign in (only used when signing in
+        # is optional — the "Sign in" button opens the login page).
+        dcc.Store(id='login-requested', data=False),
+        _build_login_page(show=required),
+        # With REQUIRE_LOGIN on, the app is hidden until authenticated; the
+        # gate reveals it. With it off, the app is visible from the start.
         html.Div(
             id='app-body',
-            style={'display': 'none'},
+            style={'display': 'none' if required else 'block'},
             children=[
-                _header(encoded_logo1, encoded_logo2),
-                _account_menu(),
-                _top_bar(global_categories),
-                _main_content(global_categories),
-                _help_modal(),
+                *dashboard_children(header_extras=[_account_menu()]),
                 _ticket_modal(),
-                _custom_reports_modal(global_categories),
+                *_chat_widget(),
             ],
         ),
         # confirmation modal for repeated report downloads
@@ -78,14 +88,19 @@ _ACCOUNT_SUMMARY = {
 
 
 def _account_menu() -> html.Div:
-    """Top-right settings menu with collapsible account actions and sign-out.
-    Visible whenever the app body is shown (i.e. when logged in)."""
+    """Settings menu with collapsible account actions and sign-out, placed at
+    the right-hand end of the dashboard header (next to the logos).
+
+    When nobody is signed in the button reads "Sign in" and opens the login
+    page instead (see callbacks.py: account_button_label / request_login)."""
     return html.Div(
-        style={'position': 'fixed', 'top': '12px', 'right': '16px', 'zIndex': '900'},
+        style={'position': 'relative', 'marginLeft': '16px', 'zIndex': '900'},
         children=[
             html.Div(
                 html.Button(
-                    '⚙ Settings',
+                    # Relabelled by account_button_label once the visitor is
+                    # known; start with the likelier label to avoid a flicker.
+                    '⚙ Settings' if login_required() else '👤 Sign in',
                     id='account-menu-btn',
                     n_clicks=0,
                     **{'aria-label': 'Open account settings'},
@@ -178,235 +193,9 @@ def _account_menu() -> html.Div:
     )
 
 
-def _header(logo1_src: str, logo2_src: str) -> html.Div:
-    return html.Div([
-        html.Div([
-            html.Button('☰', id='left-menu-btn', style={
-                'fontSize': '24px', 'backgroundColor': 'transparent',
-                'border': 'none', 'cursor': 'pointer', 'padding': '10px', 'marginRight': '15px'
-            }),
-            html.Div([
-                html.H1('Puerto Rico Mental Health Vulnerability Index for Minors',
-                        style={'margin': '0', 'fontFamily': 'Arial'}),
-            ])
-        ], style={'display': 'flex', 'alignItems': 'center'}),
-
-        html.Div([
-            html.Button(
-                'ℹ️ Data Dictionary',
-                id='open-help-btn',
-                n_clicks=0,
-                style={'display': 'none'},
-            ),
-            html.Img(src=logo1_src, style={'height': '50px', 'objectFit': 'contain'}),
-            html.Span(' | ', style={'fontSize': '30px', 'color': '#ccc', 'margin': '0 15px'}),
-            html.Img(src=logo2_src, style={'height': '50px', 'objectFit': 'contain'})
-        ], style={'display': 'flex', 'alignItems': 'center'})
-
-    ], id='app-header', style={
-        'display': 'flex', 'alignItems': 'center', 'justifyContent': 'space-between',
-        'padding': '10px 20px', 'borderBottom': '1px solid #ccc'
-    })
 
 
-def _top_bar(global_categories: list) -> html.Div:
-    return html.Div([
-        html.Div([
-            html.Label('Category:', style={'fontWeight': 'bold', 'marginRight': '10px'}),
-            dcc.Dropdown(
-                id='global-category-dropdown',
-                options=[{'label': cat.replace('_', ' '), 'value': cat} for cat in global_categories],
-                value='Overall MHVI-M Score',
-                clearable=False,
-                style={'width': '350px'}
-            )
-        ], style={'display': 'flex', 'alignItems': 'center', 'marginRight': '20px'}),
-    ], id='app-top-bar', style={
-        'display': 'flex', 'padding': '10px 20px', 'backgroundColor': '#f0f2f5',
-        'borderBottom': '1px solid #ccc', 'fontFamily': 'Arial'
-    })
 
-
-def _left_menu() -> html.Div:
-    return html.Div(
-        id='left-menu-container',
-        style={'display': 'none'},
-        children=[
-            html.H3('Navigation', style={'borderBottom': '2px solid #ccc', 'paddingBottom': '10px'}),
-            html.Button('Custom Reports', id='open-custom-reports-btn', n_clicks=0, style={
-                'width': '100%', 'padding': '10px', 'marginBottom': '10px',
-                'backgroundColor': '#ffffff', 'border': '1px solid #ccc',
-                'borderRadius': '4px', 'cursor': 'pointer', 'textAlign': 'left',
-                'fontWeight': 'bold', 'color': '#333'
-            }),
-            html.Button('Publication', style={
-                'width': '100%', 'padding': '10px', 'marginBottom': '10px',
-                'backgroundColor': '#ffffff', 'border': '1px solid #ccc',
-                'borderRadius': '4px', 'cursor': 'pointer', 'textAlign': 'left',
-                'fontWeight': 'bold', 'color': '#333'
-            }),
-            html.Button('Data Sources', style={
-                'width': '100%', 'padding': '10px', 'marginBottom': '10px',
-                'backgroundColor': '#ffffff', 'border': '1px solid #ccc',
-                'borderRadius': '4px', 'cursor': 'pointer', 'textAlign': 'left',
-                'fontWeight': 'bold', 'color': '#333'
-            }),
-            html.Button('Source Code', style={
-                'width': '100%', 'padding': '10px', 'marginBottom': '10px',
-                'backgroundColor': '#ffffff', 'border': '1px solid #ccc',
-                'borderRadius': '4px', 'cursor': 'pointer', 'textAlign': 'left',
-                'fontWeight': 'bold', 'color': '#333'
-            })
-        ]
-    )
-
-
-def _right_panel(global_categories: list) -> html.Div:
-    return html.Div(
-        id='side-panel-container',
-        style={'display': 'none'},
-        children=[
-            html.Button('✖ Close', id='close-panel-btn', style={
-                'float': 'right', 'backgroundColor': '#ff4d4d', 'color': 'white',
-                'border': 'none', 'padding': '5px 10px', 'borderRadius': '4px', 'cursor': 'pointer'
-            }),
-            html.H2(id='county-title', style={
-                'borderBottom': '2px solid #ccc', 'paddingBottom': '10px', 'marginTop': '0'
-            }),
-
-            html.Div([
-                html.Div([
-                    html.Label('Y-Axis Category', style={'fontWeight': 'bold', 'fontSize': '14px'}),
-                    dcc.Dropdown(
-                        id='y-cat-dropdown',
-                        options=[{'label': c.replace('_', ' '), 'value': c} for c in global_categories],
-                        value='Overall MHVI-M Score', clearable=False,
-                        style={'width': '100%', 'marginBottom': '15px'}
-                    ),
-                    html.Label('Y-Axis Indicator(s)', style={'fontWeight': 'bold', 'fontSize': '14px', 'color': '#666'}),
-                    dcc.Dropdown(
-                        id='y-ind-dropdown',
-                        options=[],
-                        value=[], disabled=True, multi=True, clearable=True,
-                        placeholder='Select one or more indicators',
-                        style={'width': '100%', 'marginBottom': '15px'}
-                    ),
-                    dcc.Checklist(
-                        id='graph-options-toggles',
-                        options=[
-                            {'label': ' Normalize Data (0–100)', 'value': 'normalize'},
-                            {'label': ' Predict Future Years (ML)', 'value': 'forecast'},
-                        ],
-                        value=[],
-                        style={'marginBottom': '10px', 'fontSize': '13px'},
-                        labelStyle={'display': 'block', 'marginBottom': '4px'},
-                    ),
-                ], style={'flex': '1', 'marginRight': '15px'}),
-
-                html.Div([
-                    html.Label('Secondary Category', style={'fontWeight': 'bold', 'fontSize': '14px'}),
-                    dcc.Dropdown(
-                        id='color-cat-dropdown',
-                        options=[{'label': c.replace('_', ' '), 'value': c} for c in ['N/A'] + global_categories],
-                        value='N/A', clearable=False,
-                        style={'width': '100%', 'marginBottom': '15px'}
-                    ),
-                    html.Label('Secondary Indicator', style={'fontWeight': 'bold', 'fontSize': '14px', 'color': '#666'}),
-                    dcc.Dropdown(
-                        id='color-ind-dropdown',
-                        options=[{'label': 'N/A', 'value': 'N/A'}],
-                        value='N/A', disabled=True, clearable=False,
-                        style={'width': '100%', 'marginBottom': '15px'}
-                    ),
-                ], style={'flex': '1'})
-            ], style={'display': 'flex', 'flexDirection': 'row', 'marginBottom': '20px'}),
-
-            html.Hr(),
-
-            html.Div([
-                dcc.Graph(id='factor-trend-graph', style={'height': '40vh'})
-            ], style={'marginBottom': '20px'}),
-
-            html.Div([
-                dcc.Graph(id='secondary-trend-graph', style={'height': '35vh'})
-            ], id='secondary-trend-wrapper', style={'display': 'none', 'marginBottom': '20px'}),
-
-            html.H4('Index Breakdown', id='index-breakdown-title',
-                    style={'marginTop': '10px', 'marginBottom': '6px'}),
-            html.Div(id='index-breakdown-container', style={'marginBottom': '20px'}),
-
-            html.H4('Indicators', style={'marginBottom': '6px'}),
-            html.Div(id='indicator-table-container', style={'marginBottom': '20px'}),
-        ]
-    )
-
-
-def _help_modal() -> html.Div:
-    return html.Div(
-        id='help-modal',
-        style={'display': 'none'},
-        children=[
-            html.Div(
-                style={
-                    'position': 'fixed', 'top': '0', 'left': '0',
-                    'width': '100vw', 'height': '100vh',
-                    'backgroundColor': 'rgba(0,0,0,0.4)', 'zIndex': '2000',
-                },
-                children=[
-                    html.Div(
-                        style={
-                            'position': 'absolute', 'top': '50%', 'left': '50%',
-                            'transform': 'translate(-50%, -50%)',
-                            'width': 'min(90vw, 1100px)', 'maxHeight': '85vh',
-                            'backgroundColor': 'white', 'borderRadius': '10px',
-                            'padding': '20px', 'overflow': 'hidden',
-                            'boxShadow': '0 8px 30px rgba(0,0,0,0.2)',
-                            'display': 'flex', 'flexDirection': 'column',
-                        },
-                        children=[
-                            html.Div([
-                                html.H2('Data Dictionary',
-                                        style={'margin': '0', 'color': '#4b0082'}),
-                                html.Button('✖', id='help-modal-close', n_clicks=0, style={
-                                    'border': 'none', 'background': 'transparent',
-                                    'fontSize': '20px', 'cursor': 'pointer',
-                                }),
-                            ], style={
-                                'display': 'flex', 'justifyContent': 'space-between',
-                                'alignItems': 'center', 'marginBottom': '12px',
-                            }),
-                            html.Div(
-                                id='data-dictionary-table-wrapper',
-                                style={'overflow': 'auto', 'flex': '1'},
-                                children=dash_table.DataTable(
-                                    id='data-dictionary-table',
-                                    columns=[
-                                        {'name': 'Indicator', 'id': 'friendly_name'},
-                                        {'name': 'Category', 'id': 'category'},
-                                        {'name': 'Description', 'id': 'description'},
-                                        {'name': 'Source', 'id': 'source'},
-                                    ],
-                                    data=[],
-                                    filter_action='native',
-                                    sort_action='native',
-                                    page_size=15,
-                                    style_cell={
-                                        'fontFamily': 'Arial', 'fontSize': '13px',
-                                        'textAlign': 'left', 'padding': '6px',
-                                        'whiteSpace': 'normal', 'height': 'auto',
-                                    },
-                                    style_header={
-                                        'backgroundColor': '#4b0082',
-                                        'color': 'white', 'fontWeight': 'bold',
-                                    },
-                                ),
-                            ),
-                        ],
-                    ),
-                ],
-            ),
-        ],
-    )
 
 
 def _ticket_modal() -> html.Div:
@@ -479,71 +268,6 @@ def _ticket_modal() -> html.Div:
         ],
     )
 
-
-def _custom_reports_modal(global_categories: list) -> html.Div:
-    return html.Div(
-        id='custom-reports-modal',
-        style={'display': 'none'},
-        children=[
-            html.Div(
-                style={
-                    'position': 'fixed', 'top': '0', 'left': '0',
-                    'width': '100vw', 'height': '100vh',
-                    'backgroundColor': 'rgba(0,0,0,0.4)', 'zIndex': '2000',
-                },
-                children=[
-                    html.Div(
-                        style={
-                            'position': 'absolute', 'top': '50%', 'left': '50%',
-                            'transform': 'translate(-50%, -50%)',
-                            'width': 'min(95vw, 1200px)', 'maxHeight': '90vh',
-                            'backgroundColor': 'white', 'borderRadius': '10px',
-                            'padding': '20px', 'overflow': 'hidden',
-                            'boxShadow': '0 8px 30px rgba(0,0,0,0.2)',
-                            'display': 'flex', 'flexDirection': 'column',
-                        },
-                        children=[
-                            html.Div([
-                                html.H2('Custom Report Builder',
-                                        style={'margin': '0', 'color': '#4b0082'}),
-                                html.Button('✖', id='custom-reports-close', n_clicks=0, style={
-                                    'border': 'none', 'background': 'transparent',
-                                    'fontSize': '20px', 'cursor': 'pointer',
-                                }),
-                            ], style={
-                                'display': 'flex', 'justifyContent': 'space-between',
-                                'alignItems': 'center', 'marginBottom': '12px',
-                            }),
-                            html.Div([
-                                html.Button('+ Add Element', id='add-report-element-btn',
-                                            n_clicks=0, style={
-                                                'padding': '8px 14px', 'marginRight': '10px',
-                                                'border': '1px solid #4b0082',
-                                                'backgroundColor': '#4b0082',
-                                                'color': 'white', 'borderRadius': '6px',
-                                                'cursor': 'pointer', 'fontWeight': '600',
-                                            }),
-                                html.Button('Export to PDF', id='export-report-pdf-btn',
-                                            n_clicks=0, style={
-                                                'padding': '8px 14px',
-                                                'border': '1px solid #4b0082',
-                                                'backgroundColor': 'white',
-                                                'color': '#4b0082', 'borderRadius': '6px',
-                                                'cursor': 'pointer', 'fontWeight': '600',
-                                            }),
-                            ], style={'marginBottom': '12px'}),
-                            dcc.Store(id='custom-reports-categories', data=list(global_categories)),
-                            html.Div(
-                                id='report-elements-container',
-                                children=[],
-                                style={'overflow': 'auto', 'flex': '1', 'paddingRight': '6px'},
-                            ),
-                        ],
-                    ),
-                ],
-            ),
-        ],
-    )
 
 
 _CHAT_MENU_ITEM_STYLE = {
@@ -974,17 +698,20 @@ _AUTH_BTN_STYLE = {
 }
 
 
-def _build_login_page() -> html.Div:
+def _build_login_page(show: bool = True) -> html.Div:
     """Full-page login/signup gate. Covers the entire viewport until the user is
     authenticated; the rest of the site (dashboard, map, chatbot) is hidden behind
-    it. This is the site's landing page for anonymous visitors.
+    it. This is the site's landing page for anonymous visitors when
+    REQUIRE_LOGIN is on. When it is off, the page is hidden until someone
+    clicks "Sign in", and a link leads back to the dashboard.
     """
     return html.Div(
         id='login-page',
         style={
-            # Shown by default (logged out); a callback hides it once authenticated.
+            # Shown by default when sign-in is required; a callback hides it
+            # once authenticated.
             'position': 'fixed', 'inset': '0', 'zIndex': '1000',
-            'display': 'flex',
+            'display': 'flex' if show else 'none',
             'background': 'linear-gradient(160deg, #f6edff 0%, #eee6fb 100%)',
             'flexDirection': 'column', 'justifyContent': 'center',
             'alignItems': 'center', 'padding': '24px',
@@ -998,7 +725,7 @@ def _build_login_page() -> html.Div:
                 },
                 children=[
                     html.Div(
-                        'Puerto Rico MHVI-M',
+                        'Puerto Rico MHVI',
                         style={
                             'fontWeight': '700', 'fontSize': '18px',
                             'color': '#31104f', 'marginBottom': '4px',
@@ -1061,6 +788,15 @@ def _build_login_page() -> html.Div:
                         ),
                         style={'textAlign': 'center', 'marginTop': '10px'},
                     ),
+                    # Only when signing in is optional: back to the dashboard.
+                    html.Div(
+                        html.Span('← Back to the dashboard', id='login-back-link',
+                                  n_clicks=0,
+                                  style={'fontSize': '12px', 'color': '#7a5aa6',
+                                         'cursor': 'pointer'}),
+                        style={'textAlign': 'center', 'marginTop': '14px',
+                               'display': 'none' if login_required() else 'block'},
+                    ),
                     # 'login' or 'signup' — which mode the form is in.
                     dcc.Store(id='auth-mode', data='login'),
                 ],
@@ -1121,12 +857,3 @@ def _build_forgot_password_card() -> html.Div:
     )
 
 
-def _main_content(global_categories: list) -> html.Div:
-    return html.Div([
-        _left_menu(),
-        html.Div([
-            dcc.Graph(id='pr-map', style={'height': '75vh'})
-        ], style={'flex': '7', 'padding': '10px', 'minWidth': '0'}),
-        _right_panel(global_categories),
-        *_chat_widget(),
-    ], style={'display': 'flex', 'flexDirection': 'row'})

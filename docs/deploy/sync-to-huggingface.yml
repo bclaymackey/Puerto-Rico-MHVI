@@ -1,0 +1,29 @@
+# Copies the repository to the Hugging Face Space every time `main` changes.
+#
+# NOT active while it sits in docs/. To switch it on (only once `main` holds a
+# tested version — whatever lands on main goes live):
+#   1. Hugging Face → Settings → Access Tokens → create a token with WRITE
+#      access (to that Space).
+#   2. GitHub repo → Settings → Secrets and variables → Actions → New
+#      repository secret: name HF_TOKEN, value = that token.
+#   3. Replace YOUR-HF-USERNAME/YOUR-SPACE-NAME below.
+#   4. Move this file to .github/workflows/sync-to-huggingface.yml and push.
+# The Space's own secrets (OPENAI_API_KEY, MONGODB_URI, ...) stay in the
+# Space's settings; they are never in GitHub.
+name: Sync to Hugging Face Space
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: huggingface/hub-sync@v0.1.0
+        with:
+          github_repo_id: ${{ github.repository }}
+          huggingface_repo_id: YOUR-HF-USERNAME/YOUR-SPACE-NAME
+          hf_token: ${{ secrets.HF_TOKEN }}
+          space_sdk: docker

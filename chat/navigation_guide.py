@@ -2,8 +2,10 @@
 
 Detects "how/where do I…" questions about the dashboard and returns short
 numbered UI steps instead of running the data or report flow. Templates only
-reference UI that actually exists in layout.py (Category dropdown, the map,
-the right side panel, this chat, the Custom Report Builder).
+reference UI that actually exists: the V10.1 dashboard in dashboard/layout.py
+("Map Category", "Go to municipality", the right-hand panel with its single
+indicator search box and "Values for year", Reset, the Custom Report Builder)
+and the account/ticket/chat pieces in layout.py.
 
 is_custom_report_intent() is checked by ai_service.py BEFORE the generic
 report-generation keyword match, since "custom report" would otherwise be
@@ -42,10 +44,10 @@ _NAV_PHRASES_ES = [
 
 # Known-unsupported features. If a navigation question mentions one of these,
 # return the "not in this dashboard yet" message instead of generic steps.
+# CSV export exists (the "⬇ CSV" button under the chart and the table's
+# Export), and signing in exists, so neither is listed here any more.
 _UNSUPPORTED_KEYWORDS = [
-    "excel", "csv", "spreadsheet",
-    "login", "log in", "sign in", "log out",
-    "iniciar sesión", "iniciar sesion", "cerrar sesión", "cerrar sesion",
+    "excel", "spreadsheet",
     "dark mode", "light mode", "modo oscuro", "modo claro",
     "edit data", "modify data", "delete data",
     "editar datos", "modificar datos", "borrar datos",
@@ -62,6 +64,12 @@ _TICKET_KEYWORDS_ES = [
     "boleto", "ticket", "enviar un ticket", "reportar un problema",
     "reportar un error", "reportar un fallo", "contactar soporte",
     "solicitar soporte", "presentar una queja", "informar un problema",
+]
+
+# Sign-in / account questions (the account button in the dashboard header).
+_SIGN_IN_KEYWORDS = [
+    "log in", "login", "sign in", "sign up", "create an account", "my account",
+    "iniciar sesión", "iniciar sesion", "crear una cuenta", "registrarme",
 ]
 
 # Custom Report Builder questions (☰ hamburger menu -> Custom Reports). This
@@ -98,43 +106,47 @@ _GENERAL_DASHBOARD_PHRASES_ES = [
 
 _TEMPLATES_EN = {
     "category_and_municipality": [
-        "Step 1: Look at the top of the dashboard and find the Category dropdown.",
-        "Step 2: Click it and select \"{category}\".",
-        "Step 3: Find the map of Puerto Rico in the center of the page.",
-        "Step 4: Click on {municipality} on the map.",
-        "Step 5: The right side panel will open with the score and trend chart for {category} in {municipality}.",
+        "Step 1: At the top of the page, open the \"Map Category\" dropdown and select \"{category}\".",
+        "Step 2: In the \"Go to municipality\" box next to it, type {municipality} and pick it from the list.",
+        "Step 3: The right panel opens on {municipality}, already showing {category}.",
+        "Step 4: Under \"Values for year\", choose the year you want — the exact numbers are listed as text, so you do not need to hover over the chart.",
+        "Step 5: The table below the chart carries every value, with its raw number, its normalized 0-100 number, and whether it is observed or projected.",
     ],
     "category_only": [
-        "Step 1: At the top of the dashboard, find the Category dropdown.",
-        "Step 2: Click it and select \"{category}\".",
-        "Step 3: The map will recolor to show {category} across all municipalities.",
-        "Step 4: Click any municipality on the map to see its score and trend chart.",
+        "Step 1: At the top of the page, open the \"Map Category\" dropdown and select \"{category}\".",
+        "Step 2: The map recolors to show {category} across all 78 municipalities.",
+        "Step 3: Type any name into \"Go to municipality\", or click the map, to open that municipality's panel.",
+        "Step 4: Use \"Values for year\" in the panel to read exact numbers for a given year.",
     ],
     "municipality_only": [
-        "Step 1: Find the map of Puerto Rico in the center of the page.",
-        "Step 2: Click on {municipality} on the map.",
-        "Step 3: The right side panel will open with {municipality}'s score and trend chart.",
-        "Step 4: To switch what's being scored, use the Category dropdown at the top of the dashboard.",
+        "Step 1: In the \"Go to municipality\" box at the top of the page, type {municipality} and pick it from the list. (Clicking it on the map does the same thing.)",
+        "Step 2: The right panel opens on {municipality}.",
+        "Step 3: To change what is shown, type any word — \"poverty\", \"rent\", \"insured\" — into the indicator box in the panel. One box searches every category.",
+        "Step 4: Use \"Values for year\" to read exact numbers without hovering.",
     ],
     "general": [
-        "Step 1: Use the Category dropdown at the top of the dashboard to choose what to view.",
-        "Step 2: Click any municipality on the map of Puerto Rico in the center.",
-        "Step 3: The right side panel will show that municipality's score and trend chart.",
-        "Step 4: Use this chat to ask for scores, comparisons, or to generate a PDF report.",
+        "Step 1: Pick what the map colors with \"Map Category\" at the top of the page.",
+        "Step 2: Type a name into \"Go to municipality\", or click the map, to open the right panel.",
+        "Step 3: In the panel, type any word into the indicator box to search every category at once; switch between \"Raw\" and \"Normalized 0-100\" to change how values are shown. Whichever is active is named in the bar across the top of the page.",
+        "Step 4: Use \"Values for year\" for exact numbers, the table below the chart for everything at once, and the PNG/CSV buttons to export.",
+        "Step 5: \"Reset dashboard\" at the top right clears every selection if you want to start over.",
+    ],
+    "sign_in": [
+        "Step 1: Click the \"👤 Sign in\" button at the right-hand end of the header, next to the logos.",
+        "Step 2: Enter your email and password and click \"Log in\" — or click \"Sign up\" to create an account.",
+        "Step 3: Once signed in, the same button reads \"⚙ Settings\" and has Change password, Security question, Report an issue and Sign out.",
     ],
     "report_issue": [
-        "Step 1: Click the ⚙ Settings button in the top-right corner of the dashboard.",
+        "Step 1: Sign in, then click the ⚙ Settings button at the right-hand end of the header.",
         "Step 2: In the panel that opens, click \"\U0001F6DF Report an issue\".",
         "Step 3: Choose a category, add a subject, and describe the issue.",
         "Step 4: Click Submit — our team will follow up by email.",
     ],
     "custom_report_builder": [
-        "Step 1: Click the ☰ menu button in the top-left of the header.",
-        "Step 2: In the \"Navigation\" panel, click \"Custom Reports\".",
-        "Step 3: In the Custom Report Builder that opens, click \"+ Add Element\" to add a report section.",
-        "Step 4: For each element, choose its type (Line Graph, Data Table, or Index Breakdown Table), pick one or more municipalities, then a category and indicator, and optionally toggle Normalize/Forecast.",
-        "Step 5: Repeat \"+ Add Element\" for as many sections as you want.",
-        "Step 6: Click \"Export to PDF\" to print/save your custom report.",
+        "Step 1: The quickest way: set up the chart in the right-hand panel the way you want it, then click \"➕ Add to report\" under the chart. The exact graph, with its settings, goes into the report.",
+        "Step 2: To open the report, click the ☰ menu button in the top-left of the header, then \"Custom Reports\".",
+        "Step 3: In the Custom Report Builder, \"+ Add blank element\" adds another section; for each one choose Line Graph or Data Table, the municipalities, a category and indicator, and optionally \"Normalized 0–100\" or \"Include projection\".",
+        "Step 4: Click \"🖨 Export report to PDF\" and choose \"Save as PDF\" in the print dialog.",
         "(This is different from asking me to generate a report for a specific municipality here in chat.)",
     ],
     "unknown": "I don't see that option in this dashboard yet.",
@@ -142,43 +154,47 @@ _TEMPLATES_EN = {
 
 _TEMPLATES_ES = {
     "category_and_municipality": [
-        "Paso 1: En la parte superior del panel, busca el menú Categoría.",
-        "Paso 2: Haz clic y selecciona \"{category}\".",
-        "Paso 3: Busca el mapa de Puerto Rico en el centro de la página.",
-        "Paso 4: Haz clic en {municipality} en el mapa.",
-        "Paso 5: El panel derecho se abrirá con el puntaje y la gráfica de tendencia para {category} en {municipality}.",
+        "Paso 1: Arriba de la página, abre el menú \"Map Category\" y selecciona \"{category}\".",
+        "Paso 2: En el campo \"Go to municipality\" al lado, escribe {municipality} y selecciónalo de la lista.",
+        "Paso 3: El panel derecho se abrirá en {municipality}, ya mostrando {category}.",
+        "Paso 4: En \"Values for year\", elige el año que quieras — los valores exactos aparecen como texto, así que no necesitas pasar el cursor sobre la gráfica.",
+        "Paso 5: La tabla debajo de la gráfica incluye cada valor, con su número crudo, su número normalizado 0-100, y si es observado o proyectado.",
     ],
     "category_only": [
-        "Paso 1: En la parte superior del panel, busca el menú Categoría.",
-        "Paso 2: Haz clic y selecciona \"{category}\".",
-        "Paso 3: El mapa cambiará de color según {category} en todos los municipios.",
-        "Paso 4: Haz clic en cualquier municipio del mapa para ver su puntaje y gráfica.",
+        "Paso 1: Arriba de la página, abre el menú \"Map Category\" y selecciona \"{category}\".",
+        "Paso 2: El mapa cambiará de color según {category} en los 78 municipios.",
+        "Paso 3: Escribe cualquier nombre en \"Go to municipality\", o haz clic en el mapa, para abrir el panel de ese municipio.",
+        "Paso 4: Usa \"Values for year\" en el panel para leer los números exactos de un año.",
     ],
     "municipality_only": [
-        "Paso 1: Busca el mapa de Puerto Rico en el centro de la página.",
-        "Paso 2: Haz clic en {municipality} en el mapa.",
-        "Paso 3: El panel derecho se abrirá con los puntajes de {municipality}.",
-        "Paso 4: Para cambiar lo que se muestra, usa el menú Categoría en la parte superior.",
+        "Paso 1: En el campo \"Go to municipality\" arriba de la página, escribe {municipality} y selecciónalo. (Hacer clic en el mapa logra lo mismo.)",
+        "Paso 2: El panel derecho se abrirá en {municipality}.",
+        "Paso 3: Para cambiar lo que se muestra, escribe cualquier palabra — \"pobreza\", \"renta\", \"asegurado\" — en el campo de indicadores del panel. Un solo campo busca en todas las categorías.",
+        "Paso 4: Usa \"Values for year\" para leer números exactos sin pasar el cursor.",
     ],
     "general": [
-        "Paso 1: Usa el menú Categoría en la parte superior para elegir qué ver.",
-        "Paso 2: Haz clic en cualquier municipio del mapa de Puerto Rico.",
-        "Paso 3: El panel derecho mostrará el puntaje y la gráfica de ese municipio.",
-        "Paso 4: Usa este chat para pedir puntajes, comparaciones o generar un informe en PDF.",
+        "Paso 1: Elige qué colorea el mapa con \"Map Category\" arriba de la página.",
+        "Paso 2: Escribe un nombre en \"Go to municipality\", o haz clic en el mapa, para abrir el panel derecho.",
+        "Paso 3: En el panel, escribe cualquier palabra en el campo de indicadores para buscar en todas las categorías; cambia entre \"Raw\" y \"Normalized 0-100\" para cambiar cómo se muestran los valores. El modo activo aparece en la barra superior de la página.",
+        "Paso 4: Usa \"Values for year\" para números exactos, la tabla debajo de la gráfica para verlo todo, y los botones PNG/CSV para exportar.",
+        "Paso 5: \"Reset dashboard\" arriba a la derecha limpia todas las selecciones si quieres empezar de nuevo.",
+    ],
+    "sign_in": [
+        "Paso 1: Haz clic en el botón \"👤 Sign in\" al extremo derecho del encabezado, junto a los logos.",
+        "Paso 2: Escribe tu correo y contraseña y haz clic en \"Log in\" — o en \"Sign up\" para crear una cuenta.",
+        "Paso 3: Ya con la sesión iniciada, el mismo botón dice \"⚙ Settings\" y tiene cambiar contraseña, pregunta de seguridad, reportar un problema y cerrar sesión.",
     ],
     "report_issue": [
-        "Paso 1: Haz clic en el botón ⚙ Settings en la esquina superior derecha del panel.",
+        "Paso 1: Inicia sesión y haz clic en el botón ⚙ Settings al extremo derecho del encabezado.",
         "Paso 2: En el panel que se abre, haz clic en \"\U0001F6DF Report an issue\".",
         "Paso 3: Elige una categoría, agrega un asunto y describe el problema.",
         "Paso 4: Haz clic en Submit — nuestro equipo responderá por correo electrónico.",
     ],
     "custom_report_builder": [
-        "Paso 1: Haz clic en el botón ☰ en la parte superior izquierda del encabezado.",
-        "Paso 2: En el panel \"Navigation\", haz clic en \"Custom Reports\".",
-        "Paso 3: En el Custom Report Builder que se abre, haz clic en \"+ Add Element\" para agregar una sección al informe.",
-        "Paso 4: Para cada elemento, elige su tipo (Line Graph, Data Table o Index Breakdown Table), selecciona uno o más municipios, luego una categoría y un indicador, y activa Normalize/Forecast si lo deseas.",
-        "Paso 5: Repite \"+ Add Element\" para agregar tantas secciones como quieras.",
-        "Paso 6: Haz clic en \"Export to PDF\" para imprimir o guardar tu informe personalizado.",
+        "Paso 1: Lo más rápido: prepara la gráfica en el panel derecho como la quieras y haz clic en \"➕ Add to report\" debajo de la gráfica. La gráfica exacta, con su configuración, pasa al informe.",
+        "Paso 2: Para abrir el informe, haz clic en el botón ☰ arriba a la izquierda del encabezado y luego en \"Custom Reports\".",
+        "Paso 3: En el Custom Report Builder, \"+ Add blank element\" agrega otra sección; para cada una elige Line Graph o Data Table, los municipios, una categoría y un indicador, y si quieres \"Normalized 0–100\" o \"Include projection\".",
+        "Paso 4: Haz clic en \"🖨 Export report to PDF\" y elige \"Guardar como PDF\" en el diálogo de impresión.",
         "(Esto es distinto de pedirme que genere un informe para un municipio específico aquí en el chat.)",
     ],
     "unknown": "No veo esa opción en este panel todavía.",
@@ -226,7 +242,7 @@ def _muni_df():
 
 
 def _dropdown_label(table_name: str) -> str:
-    # Mirrors layout.py converting underscores to spaces for the dropdown.
+    # Mirrors dashboard/core.py's pretty_category(): underscores become spaces.
     return table_name.replace("_", " ")
 
 
@@ -245,6 +261,9 @@ def build_navigation_response(user_input: str, language: str) -> str | None:
     ticket_keywords = _TICKET_KEYWORDS_ES if language == "es" else _TICKET_KEYWORDS_EN
     if any(kw in text_lower for kw in ticket_keywords):
         return "\n".join(templates["report_issue"])
+
+    if any(kw in text_lower for kw in _SIGN_IN_KEYWORDS):
+        return "\n".join(templates["sign_in"])
 
     table, _short = detect_category(text_lower)
     category_label = _dropdown_label(table) if table else None

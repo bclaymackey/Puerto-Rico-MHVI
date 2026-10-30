@@ -2,10 +2,7 @@ from datetime import datetime
 import uuid
 
 import dash
-from dash import Input, Output, State, dcc, html, ALL, MATCH, dash_table
-import plotly.express as px
-import plotly.graph_objects as go
-import pandas as pd
+from dash import Input, Output, State, dcc, html, ALL
 from chat import (
     build_pdf_bytes,
     consume_report,
@@ -36,19 +33,59 @@ from auth.core import (
 )
 from mongodb.chat_dal import get_name_prompted, set_name_prompted, get_user_name
 
-from data import (
-    fetch_map_data,
-    fetch_municipality_name,
-    query_axis_data,
-    query_indicator_table,
-    normalize_series,
-    forecast_series,
-    get_db_connection,
-    counties,
-)
+from functools import wraps
+
+from pymongo.errors import PyMongoError
+
+from auth.policy import login_required
+from mongodb.client import is_available as mongo_available, mark_unavailable
+from dashboard import grounded_bubble
 
 
-def register_callbacks(app: dash.Dash, db_metadata: dict, data_dictionary_df=None) -> None:
+# Shown wherever a feature needs the chat database and it cannot be reached.
+_UNAVAILABLE = {
+    'en': 'temporarily unavailable',
+    'es': 'no disponible temporalmente',
+}
+
+
+class _MongoSafeApp:
+    """Wraps the Dash app so that a MongoDB failure inside any callback below
+    leaves the page as it was instead of showing an error, and the next few
+    requests skip the database at once (see mongodb/client.py). The dashboard
+    itself never touches MongoDB, so it keeps working throughout."""
+
+    def __init__(self, app):
+        self._app = app
+
+    def callback(self, *args, **kwargs):
+        register = self._app.callback(*args, **kwargs)
+
+        def decorator(fn):
+            @wraps(fn)
+            def guarded(*a, **k):
+                try:
+                    return fn(*a, **k)
+                except PyMongoError as exc:
+                    mark_unavailable()
+                    print(f"[{fn.__name__}] MongoDB unavailable: {exc}")
+                    raise dash.exceptions.PreventUpdate
+            return register(guarded)
+        return decorator
+
+    def __getattr__(self, name):  # clientside_callback, server, …
+        return getattr(self._app, name)
+
+
+def register_callbacks(app: dash.Dash, db_metadata: dict = None, data_dictionary_df=None) -> None:
+    """Sign-in, account, ticket and AI-assistant callbacks.
+
+    The dashboard's own callbacks are registered by
+    dashboard.register_dashboard_callbacks(). db_metadata and
+    data_dictionary_df are no longer needed here (they fed the older V6
+    dashboard callbacks) and are kept only so existing calls still work.
+    """
+    app = _MongoSafeApp(app)
 
     # Resolve the logged-in user id from the auth session cookie on each page load.
     # This replaces the old anonymous browser-UUID identity: user_id now comes from
@@ -58,6 +95,8 @@ def register_callbacks(app: dash.Dash, db_metadata: dict, data_dictionary_df=Non
         Input('chat-user-id', 'modified_timestamp'),
     )
     def resolve_chat_user_id(_):
+        if not mongo_available():
+            return None
         return current_user_id()
 
     def _attach_session_cookie(raw_token: str, remember: bool):
@@ -73,25 +112,67 @@ def register_callbacks(app: dash.Dash, db_metadata: dict, data_dictionary_df=Non
             return response
 
     # Full-page gate: show the login page and hide the app body when logged out;
-    # reveal the app and hide the login page once authenticated. The site lands
-    # on the login page for anonymous visitors.
+    # reveal the app and hide the login page once authenticated.
+    #   REQUIRE_LOGIN on  -> the site lands on the login page for anonymous
+    #                        visitors (the original behaviour).
+    #   REQUIRE_LOGIN off -> the dashboard is open to everyone; the login page
+    #                        appears only after clicking "Sign in".
+    # If MongoDB cannot be reached nobody can sign in, so the dashboard is shown
+    # rather than a login form that cannot work.
     @app.callback(
         [Output('login-page', 'style'),
          Output('app-body', 'style')],
-        Input('chat-user-id', 'data'),
+        [Input('chat-user-id', 'data'),
+         Input('login-requested', 'data')],
         [State('login-page', 'style'),
          State('app-body', 'style')],
     )
-    def toggle_site_gate(user_id, login_style, body_style):
+    def toggle_site_gate(user_id, login_requested, login_style, body_style):
         login_style = dict(login_style or {})
         body_style = dict(body_style or {})
         if user_id:
+            show_login = False
+        elif login_required():
+            show_login = mongo_available()
+        else:
+            show_login = bool(login_requested) and mongo_available()
+        if not show_login:
             login_style['display'] = 'none'
             body_style['display'] = 'block'
         else:
             login_style['display'] = 'flex'
             body_style['display'] = 'none'
         return login_style, body_style
+
+    # Optional sign-in: the header button opens the login page for a visitor
+    # who is not signed in; "Back to the dashboard" closes it; signing in or
+    # out resets it.
+    @app.callback(
+        Output('login-requested', 'data'),
+        [Input('account-menu-btn', 'n_clicks'),
+         Input('login-back-link', 'n_clicks'),
+         Input('chat-user-id', 'data')],
+        prevent_initial_call=True,
+    )
+    def request_login(_menu_clicks, _back_clicks, user_id):
+        trigger = dash.ctx.triggered_id
+        if trigger == 'account-menu-btn':
+            return not user_id
+        return False
+
+    # The header button: "⚙ Settings" when signed in, "Sign in" otherwise.
+    @app.callback(
+        [Output('account-menu-btn', 'children'),
+         Output('account-menu-btn', 'title')],
+        Input('chat-user-id', 'data'),
+    )
+    def account_button_label(user_id):
+        if user_id:
+            return '⚙ Settings', 'Account settings, report an issue, sign out'
+        if not mongo_available():
+            return ('👤 Sign in', 'Signing in is ' + _UNAVAILABLE['en'] +
+                    '. The dashboard and the assistant still work.')
+        return '👤 Sign in', 'Sign in to keep your chat history and report issues'
 
     # Toggle the form between login and signup: show/hide the confirm field, swap
     # the button label and the prompt text.
@@ -133,6 +214,9 @@ def register_callbacks(app: dash.Dash, db_metadata: dict, data_dictionary_df=Non
     def submit_auth(n_clicks, mode, email, password, confirm):
         if not n_clicks:
             return dash.no_update, dash.no_update
+        if not mongo_available():
+            return dash.no_update, ('Signing in is ' + _UNAVAILABLE['en'] +
+                                    '. Please try again in a few minutes.')
         email = (email or '').strip()
         password = password or ''
         if (mode or 'login') == 'signup':
@@ -170,10 +254,13 @@ def register_callbacks(app: dash.Dash, db_metadata: dict, data_dictionary_df=Non
     @app.callback(
         Output('account-panel', 'style'),
         Input('account-menu-btn', 'n_clicks'),
-        State('account-panel', 'style'),
+        [State('account-panel', 'style'),
+         State('chat-user-id', 'data')],
         prevent_initial_call=True,
     )
-    def toggle_account_panel(n_clicks, style):
+    def toggle_account_panel(n_clicks, style, user_id):
+        if not user_id:  # not signed in: the button opens the login page instead
+            return {**(style or {}), 'display': 'none'}
         style = dict(style or {})
         style['display'] = 'none' if style.get('display') == 'block' else 'block'
         return style
@@ -281,102 +368,10 @@ def register_callbacks(app: dash.Dash, db_metadata: dict, data_dictionary_df=Non
             return 'Password reset. You can now sign in with your new password.'
         return err
 
-    @app.callback(
-        Output('pr-map', 'figure'),
-        Input('global-category-dropdown', 'value')
-    )
-    def update_map(category):
-        df = fetch_map_data(category)
-
-        if df.empty:
-            fig = px.choropleth_map(
-                geojson=counties, locations=[], map_style='carto-positron',
-                zoom=7.5, center={'lat': 18.2208, 'lon': -66.5901}
-            )
-            fig.update_layout(margin={'r': 0, 't': 0, 'l': 0, 'b': 0})
-            return fig
-
-        fig = px.choropleth_map(
-            df,
-            geojson=counties,
-            locations='fips_code',
-            color='value',
-            hover_name='name',
-            color_continuous_scale='Viridis_r',
-            map_style='carto-positron',
-            zoom=7.5,
-            center={'lat': 18.2208, 'lon': -66.5901},
-            opacity=0.8,
-            hover_data={'fips_code': False, 'value': True}
-        )
-        fig.update_layout(margin={'r': 0, 't': 0, 'l': 0, 'b': 0})
-        return fig
-
-    @app.callback(
-        [Output('y-ind-dropdown', 'options'),
-         Output('y-ind-dropdown', 'value'),
-         Output('y-ind-dropdown', 'disabled')],
-        Input('y-cat-dropdown', 'value')
-    )
-    def update_y_indicator(y_cat):
-        if y_cat in ['N/A', 'Overall MHVI-M Score']:
-            return [], [], True
-        indicators = db_metadata.get(y_cat, [])
-        options = [{'label': i.replace('_', ' '), 'value': i} for i in indicators]
-        default = [indicators[0]] if indicators else []
-        return options, default, False
-
-    @app.callback(
-        [Output('color-ind-dropdown', 'options'),
-         Output('color-ind-dropdown', 'value'),
-         Output('color-ind-dropdown', 'disabled')],
-        Input('color-cat-dropdown', 'value')
-    )
-    def update_color_indicator(color_cat):
-        if color_cat in ['N/A', 'Overall MHVI-M Score']:
-            return [{'label': 'N/A', 'value': 'N/A'}], 'N/A', True
-        indicators = db_metadata.get(color_cat, [])
-        options = [{'label': i.replace('_', ' '), 'value': i} for i in indicators]
-        val = indicators[0] if indicators else 'N/A'
-        return options, val, False
-
-    @app.callback(
-        Output('left-menu-container', 'style'),
-        Input('left-menu-btn', 'n_clicks'),
-        State('left-menu-container', 'style')
-    )
-    def toggle_left_menu(n_clicks, current_style):
-        if n_clicks is None:
-            raise dash.exceptions.PreventUpdate
-        if current_style and current_style.get('display') == 'none':
-            return {
-                'flex': '2', 'padding': '20px', 'backgroundColor': '#f0f2f5',
-                'borderRight': '1px solid #ccc', 'fontFamily': 'Arial',
-                'height': '68vh', 'display': 'flex', 'flexDirection': 'column',
-                'minWidth': '0'
-            }
-        return {'display': 'none'}
-
-    @app.callback(
-        Output('side-panel-container', 'style'),
-        [Input('pr-map', 'clickData'),
-         Input('close-panel-btn', 'n_clicks')]
-    )
-    def toggle_right_panel(map_click, close_click):
-        trigger_id = dash.ctx.triggered_id
-        if not trigger_id:
-            return {'display': 'none'}
-        if trigger_id == 'close-panel-btn':
-            return {'display': 'none'}
-        elif trigger_id == 'pr-map' and map_click is not None:
-            return {
-                'flex': '4', 'padding': '20px', 'backgroundColor': '#f8f9fa',
-                'borderLeft': '1px solid #ccc', 'fontFamily': 'Arial',
-                'height': '75vh', 'overflowY': 'auto',
-                'display': 'flex', 'flexDirection': 'column',
-                'minWidth': '0'
-            }
-        return {'display': 'none'}
+    # The dashboard itself (map, side panel, tables, Data Dictionary, Custom
+    # Report Builder) is registered separately from dashboard/callbacks.py.
+    # The older V6 versions of those callbacks that used to live here were
+    # removed when the V10.1 dashboard was merged in.
 
     @app.callback(
         Output('chat-window-state', 'data'),
@@ -843,9 +838,11 @@ def register_callbacks(app: dash.Dash, db_metadata: dict, data_dictionary_df=Non
         message_label = 'mensajes' if language == 'es' else 'messages'
         return f"{timestamp_label} · {session.get('message_count', 0)} {message_label}"
 
-    def _render_session_rows(sessions, active_session_id, language, search_value):
+    def _render_session_rows(sessions, active_session_id, language, search_value,
+                             empty_text=None):
         if not sessions:
-            empty_text = 'No saved chats.' if language != 'es' else 'No hay chats guardados.'
+            if empty_text is None:
+                empty_text = 'No saved chats.' if language != 'es' else 'No hay chats guardados.'
             return [
                 html.Div(
                     empty_text,
@@ -1060,6 +1057,17 @@ def register_callbacks(app: dash.Dash, db_metadata: dict, data_dictionary_df=Non
         if not is_open:
             return dash.no_update
         language = language or 'en'
+        # Chat history belongs to an account: say so instead of an empty list.
+        if not mongo_available():
+            note = ('El historial de chats no está disponible temporalmente.'
+                    if language == 'es' else
+                    'Chat history is temporarily unavailable.')
+            return _render_session_rows([], active_session_id, language, '', note)
+        if not user_id:
+            note = ('Inicia sesión para guardar y ver tu historial de chats.'
+                    if language == 'es' else
+                    'Sign in to save and see your chat history.')
+            return _render_session_rows([], active_session_id, language, '', note)
         sessions = (
             search_user_conversations(user_id, search_value or '', language=language)
             if (search_value or '').strip()
@@ -1277,7 +1285,7 @@ def register_callbacks(app: dash.Dash, db_metadata: dict, data_dictionary_df=Non
         if preference and preference.get('language'):
             preference_update = {'language': new_language}
 
-        if not session_id:
+        if not session_id or not mongo_available():
             messages = [_welcome_bubble(new_language)]
         else:
             history = get_history_for_display(session_id, new_language)
@@ -1300,7 +1308,7 @@ def register_callbacks(app: dash.Dash, db_metadata: dict, data_dictionary_df=Non
         # Re-render the whole visible thread in the newly selected language so
         # nothing stays in the old language. Reuses the same DB-backed load path
         # as load_chat_session; falls back to a welcome bubble for empty threads.
-        if not language or not session_id:
+        if not language or not session_id or not mongo_available():
             return dash.no_update
         history = get_history_for_display(session_id, language)
         if not history:
@@ -1315,13 +1323,16 @@ def register_callbacks(app: dash.Dash, db_metadata: dict, data_dictionary_df=Non
          Output('chat-sessions-open', 'data', allow_duplicate=True),
          Output('pending-report', 'data', allow_duplicate=True),
          Output('chat-history-tick', 'data', allow_duplicate=True)],
-        Input('chat-new-session-btn', 'n_clicks'),
+        # "Reset dashboard" also starts a clean conversation, so answers never
+        # lean on context from before the reset (usability study [E3-R4]).
+        [Input('chat-new-session-btn', 'n_clicks'),
+         Input('reset-btn', 'n_clicks')],
         [State('chat-language', 'data'),
          State('chat-history-tick', 'data')],
         prevent_initial_call=True,
     )
-    def start_new_chat_session(n_clicks, language, tick):
-        if not n_clicks:
+    def start_new_chat_session(n_clicks, reset_clicks, language, tick):
+        if not (n_clicks or reset_clicks):
             return (dash.no_update,) * 5
         return (
             str(uuid.uuid4()),
@@ -1411,6 +1422,14 @@ def register_callbacks(app: dash.Dash, db_metadata: dict, data_dictionary_df=Non
                 '➤',
                 None,
                 dash.no_update,
+            )
+
+        # Commands that read or change saved history need the chat database.
+        if (command == '/delete' or command.startswith('/name')) and not mongo_available():
+            return _bubble_reply(
+                'El historial de chats no está disponible temporalmente.'
+                if language == 'es' else
+                'Chat history is temporarily unavailable, so that command cannot run right now.'
             )
 
         if command in {'/new', '/session'}:
@@ -1510,7 +1529,8 @@ def register_callbacks(app: dash.Dash, db_metadata: dict, data_dictionary_df=Non
         # message and we have no name yet, ASK for their name (we don't treat this
         # first message as the name — they might open with "hi"). Mark that we've
         # asked so we only prompt once.
-        if user_id and not command.startswith('/') and not get_name_prompted(user_id):
+        db_up = bool(user_id) and mongo_available()
+        if db_up and not command.startswith('/') and not get_name_prompted(user_id):
             set_name_prompted(user_id)
             ask = (
                 '¡Hola! Antes de empezar, ¿cómo te gustaría que te llame?'
@@ -1531,7 +1551,7 @@ def register_callbacks(app: dash.Dash, db_metadata: dict, data_dictionary_df=Non
 
         # Name-on-first-chat, step 2: we asked last turn (name_prompted is set) but
         # still have no name. If this message looks like a name, store it and greet.
-        if user_id and not command.startswith('/') and not get_user_name(user_id):
+        if db_up and not command.startswith('/') and not get_user_name(user_id):
             candidate = ' '.join(user_input.strip().split())
             looks_like_name = (
                 0 < len(candidate) <= 40
@@ -1591,21 +1611,28 @@ def register_callbacks(app: dash.Dash, db_metadata: dict, data_dictionary_df=Non
          Output('chat-history-tick', 'data', allow_duplicate=True),
          Output('pending-report', 'data', allow_duplicate=True),
          Output('chat-send-btn', 'children', allow_duplicate=True),
-         Output('chat-generating', 'data', allow_duplicate=True)],
+         Output('chat-generating', 'data', allow_duplicate=True),
+         Output('download-pdf', 'data', allow_duplicate=True),
+         Output('chat-download-state', 'data', allow_duplicate=True)],
         Input('pending-user-message', 'data'),
         [State('chat-messages', 'children'),
          State('chat-language', 'data'),
          State('chat-session-id', 'data'),
          State('chat-user-id', 'data'),
          State('chat-history-tick', 'data'),
-         State('chat-cancelled', 'data')],
+         State('chat-cancelled', 'data'),
+         # What the dashboard is showing (municipalities, indicators, year,
+         # display mode), so "what is this value?" is answered from it.
+         State('dashboard-state', 'data')],
         prevent_initial_call=True,
     )
     def generate_ai_response(
-        pending, messages, language, session_id, user_id, tick, cancelled
+        pending, messages, language, session_id, user_id, tick, cancelled,
+        dashboard_state=None,
     ):
+        nu = dash.no_update
         if not pending or not pending.get('text'):
-            return dash.no_update, dash.no_update, dash.no_update, '➤', None
+            return nu, nu, nu, '➤', None, nu, nu
 
         print(
             f"[generate_ai_response] text={pending.get('text')!r} "
@@ -1616,6 +1643,7 @@ def register_callbacks(app: dash.Dash, db_metadata: dict, data_dictionary_df=Non
         try:
             ai_response = process_chat_message(
                 pending['text'], language or 'en', session_id, user_id,
+                dashboard_state=dashboard_state,
             )
         except Exception as e:
             print(f"[generate_ai_response] error: {e}")
@@ -1630,13 +1658,36 @@ def register_callbacks(app: dash.Dash, db_metadata: dict, data_dictionary_df=Non
         # typing indicator and restored the arrow.)
         if nonce and cancelled == nonce:
             print("[generate_ai_response] cancelled by user, dropping reply")
-            return dash.no_update, dash.no_update, dash.no_update, dash.no_update, None
+            return nu, nu, nu, nu, None, nu, nu
 
         messages = [m for m in (messages or []) if not _is_typing_indicator(m)]
 
         pending_report_update = dash.no_update
+        download_update = chat_download_state = dash.no_update
         assistant_timestamp = datetime.utcnow().isoformat()
-        if isinstance(ai_response, dict) and ai_response.get('kind') == 'report':
+        kind = ai_response.get('kind') if isinstance(ai_response, dict) else None
+        if kind == 'grounded':
+            # Answered from the dashboard's own data: shows the rows it used and
+            # offers "View these values in the graph" (dashboard/chat_bridge.py).
+            messages.append(grounded_bubble(ai_response, language or 'en'))
+        elif kind == 'export_chat':
+            # "Export this conversation" — download the transcript, as the
+            # ⋮ menu's Download Chat PDF does, instead of building a report.
+            messages.append(_ai_bubble(ai_response.get('text', ''),
+                                       timestamp=assistant_timestamp,
+                                       language=language or 'en'))
+            history = (get_history_for_display(session_id, language or 'en')
+                       if session_id and mongo_available() else [])
+            if history:
+                pdf_bytes = build_pdf_bytes(history, language=language or 'en')
+                stamp = datetime.now().strftime('%Y-%m-%d_%H-%M')
+                download_update = dcc.send_bytes(
+                    lambda f: f.write(pdf_bytes),
+                    filename=f'chat_transcript_{stamp}.pdf')
+                chat_download_state = {
+                    'downloaded': True, 'ts': stamp,
+                    'label': '¡Descargado!' if language == 'es' else 'Downloaded!'}
+        elif kind == 'report':
             messages.append(
                 _report_bubble(
                     ai_response.get('message', ''),
@@ -1663,7 +1714,8 @@ def register_callbacks(app: dash.Dash, db_metadata: dict, data_dictionary_df=Non
             )
 
         # Reply is ready — restore the arrow and clear the generating flag.
-        return messages, (tick or 0) + 1, pending_report_update, '➤', None
+        return (messages, (tick or 0) + 1, pending_report_update, '➤', None,
+                download_update, chat_download_state)
 
     # Chat PDF always re-downloads on click; success is shown via the
     # blurred "Downloaded!" overlay (see clientside_callback above), not a
@@ -1675,7 +1727,7 @@ def register_callbacks(app: dash.Dash, db_metadata: dict, data_dictionary_df=Non
         prevent_initial_call=True,
     )
     def export_chat_pdf(n_clicks, session_id, language):
-        if not n_clicks or not session_id:
+        if not n_clicks or not session_id or not mongo_available():
             return dash.no_update, dash.no_update
 
         history = get_history_for_display(session_id, language or 'en')
@@ -1740,7 +1792,7 @@ def register_callbacks(app: dash.Dash, db_metadata: dict, data_dictionary_df=Non
         State('chat-session-id', 'data'),
     )
     def toggle_pdf_button(_tick, session_id):
-        if not session_id:
+        if not session_id or not mongo_available():
             return True
         history = get_history_for_display(session_id)
         if not history:
@@ -1847,586 +1899,6 @@ def register_callbacks(app: dash.Dash, db_metadata: dict, data_dictionary_df=Non
             '🌐 Español',
         )
 
-    def _series_for_category(fips, category, indicator):
-        """Return sorted DataFrame[year, val] for one (cat, ind). Handles Overall."""
-        if category == 'Overall MHVI-M Score':
-            df = query_axis_data(fips, category, indicator)
-        else:
-            df = query_axis_data(fips, category, indicator)
-        if df is None or df.empty:
-            return pd.DataFrame(columns=['year', 'val'])
-        df = df.dropna(subset=['val']).sort_values(by='year')
-        df['year'] = pd.to_numeric(df['year'], errors='coerce')
-        df = df.dropna(subset=['year'])
-        return df
-
-    def _add_trace_with_options(fig, df, label, options, color=None, group=None):
-        if df.empty:
-            return
-        years = df['year'].astype(int).tolist()
-        vals = df['val'].astype(float).tolist()
-        plot_vals = (
-            list(normalize_series(vals)) if 'normalize' in (options or []) else vals
-        )
-        legend_group = group or label
-        fig.add_trace(go.Scatter(
-            x=years, y=plot_vals, mode='lines+markers',
-            name=label, legendgroup=legend_group,
-            marker=dict(size=8), line=dict(color=color) if color else dict(),
-        ))
-        if 'forecast' in (options or []):
-            fc = forecast_series(years, plot_vals)
-            if fc is not None:
-                fc_years, fc_vals = fc
-                last_x = [years[-1]] + list(int(y) for y in fc_years)
-                last_y = [plot_vals[-1]] + list(fc_vals)
-                fig.add_trace(go.Scatter(
-                    x=last_x, y=last_y, mode='lines',
-                    name=f'{label} (forecast)', legendgroup=legend_group,
-                    line=dict(dash='dash', color=color) if color else dict(dash='dash'),
-                    showlegend=False,
-                ))
-
-    def _empty_fig(title):
-        fig = px.scatter(title=title)
-        fig.update_layout(
-            margin={'r': 0, 't': 30, 'l': 0, 'b': 0},
-            paper_bgcolor='#f8f9fa', plot_bgcolor='#f8f9fa',
-        )
-        return fig
-
-    @app.callback(
-        [Output('county-title', 'children'),
-         Output('factor-trend-graph', 'figure'),
-         Output('secondary-trend-graph', 'figure'),
-         Output('secondary-trend-wrapper', 'style')],
-        [Input('pr-map', 'clickData'),
-         Input('y-cat-dropdown', 'value'),
-         Input('y-ind-dropdown', 'value'),
-         Input('color-cat-dropdown', 'value'),
-         Input('color-ind-dropdown', 'value'),
-         Input('graph-options-toggles', 'value')]
-    )
-    def update_dynamic_plot(clickData, y_cat, y_ind, color_cat, color_ind, options):
-        if clickData is None:
-            raise dash.exceptions.PreventUpdate
-
-        clicked_fips = clickData['points'][0]['location']
-        muni_name = fetch_municipality_name(clicked_fips)
-
-        # ----- Primary -----
-        primary_fig = _empty_fig('No Y-Axis Data Found')
-        y_label_axis = ''
-        if y_cat == 'Overall MHVI-M Score':
-            df = _series_for_category(clicked_fips, y_cat, None)
-            if not df.empty:
-                primary_fig = go.Figure()
-                _add_trace_with_options(primary_fig, df, 'Overall MHVI-M Score', options)
-                y_label_axis = 'Overall MHVI-M Score'
-        else:
-            inds = y_ind if isinstance(y_ind, list) else ([y_ind] if y_ind else [])
-            inds = [i for i in inds if i and i != 'N/A']
-            if inds:
-                primary_fig = go.Figure()
-                for ind in inds:
-                    df = _series_for_category(clicked_fips, y_cat, ind)
-                    label = ind.replace('_', ' ')
-                    _add_trace_with_options(primary_fig, df, label, options)
-                y_label_axis = (
-                    'Normalized (0–100)' if 'normalize' in (options or []) else 'Value'
-                )
-
-        if isinstance(primary_fig, go.Figure):
-            primary_fig.update_layout(
-                margin={'r': 0, 't': 10, 'l': 0, 'b': 0},
-                paper_bgcolor='#f8f9fa', plot_bgcolor='#f8f9fa',
-                xaxis={'title': 'Year', 'type': 'category'},
-                yaxis={'title': y_label_axis},
-                legend={'orientation': 'h', 'yanchor': 'bottom', 'y': 1.02},
-            )
-
-        # ----- Secondary -----
-        if color_cat and color_cat != 'N/A':
-            if color_cat == 'Overall MHVI-M Score':
-                df_sec = _series_for_category(clicked_fips, color_cat, None)
-                sec_label = 'Overall MHVI-M Score'
-            elif color_ind and color_ind != 'N/A':
-                df_sec = _series_for_category(clicked_fips, color_cat, color_ind)
-                sec_label = color_ind.replace('_', ' ')
-            else:
-                df_sec = pd.DataFrame(columns=['year', 'val'])
-                sec_label = ''
-
-            secondary_fig = go.Figure()
-            if df_sec.empty:
-                secondary_fig = _empty_fig('No Secondary Data Found')
-            else:
-                _add_trace_with_options(secondary_fig, df_sec, sec_label, options,
-                                         color='#e76f51')
-                secondary_fig.update_layout(
-                    margin={'r': 0, 't': 10, 'l': 0, 'b': 0},
-                    paper_bgcolor='#f8f9fa', plot_bgcolor='#f8f9fa',
-                    xaxis={'title': 'Year', 'type': 'category'},
-                    yaxis={'title': 'Normalized (0–100)' if 'normalize' in (options or []) else sec_label},
-                    legend={'orientation': 'h', 'yanchor': 'bottom', 'y': 1.02},
-                )
-            sec_style = {'display': 'block', 'marginBottom': '20px'}
-        else:
-            secondary_fig = _empty_fig('')
-            sec_style = {'display': 'none'}
-
-        return muni_name, primary_fig, secondary_fig, sec_style
-
-    # ----- Indicator accordion -----
-    @app.callback(
-        Output('indicator-table-container', 'children'),
-        [Input('pr-map', 'clickData'),
-         Input('global-category-dropdown', 'value')]
-    )
-    def update_indicator_table(clickData, category):
-        if clickData is None or not category:
-            return []
-        fips = clickData['points'][0]['location']
-        df = query_indicator_table(fips, category)
-        if df.empty:
-            return html.Div('No indicators available for this selection.',
-                            style={'color': '#888', 'fontStyle': 'italic'})
-
-        groups = []
-        for ind, sub in df.groupby('indicator_name'):
-            if ind == 'Subcategory Index Score':
-                continue
-            sub = sub.sort_values('year')
-            rows = [
-                html.Tr([
-                    html.Td(int(r['year']) if pd.notna(r['year']) else '',
-                            style={'padding': '3px 8px'}),
-                    html.Td(
-                        '—' if pd.isna(r['value']) else f"{r['value']:.4g}",
-                        style={'padding': '3px 8px'},
-                    ),
-                ])
-                for _, r in sub.iterrows()
-            ]
-            disabled = category == 'Overall MHVI-M Score'
-            groups.append(html.Details([
-                html.Summary([
-                    html.Span(ind.replace('_', ' '),
-                              style={'fontWeight': 'bold'}),
-                    html.Button(
-                        'Plot',
-                        id={'type': 'plot-ind-btn', 'index': ind},
-                        n_clicks=0,
-                        disabled=disabled,
-                        style={
-                            'marginLeft': '10px', 'padding': '2px 8px',
-                            'fontSize': '11px',
-                            'border': '1px solid #4b0082',
-                            'borderRadius': '4px',
-                            'backgroundColor': 'white' if not disabled else '#eee',
-                            'color': '#4b0082' if not disabled else '#999',
-                            'cursor': 'pointer' if not disabled else 'not-allowed',
-                        },
-                    ),
-                ], style={'cursor': 'pointer', 'padding': '6px 0'}),
-                html.Table(
-                    [html.Thead(html.Tr([
-                        html.Th('Year', style={'textAlign': 'left', 'padding': '3px 8px'}),
-                        html.Th('Value', style={'textAlign': 'left', 'padding': '3px 8px'}),
-                    ]))] + [html.Tbody(rows)],
-                    style={'width': '100%', 'borderCollapse': 'collapse',
-                           'fontSize': '12px', 'marginTop': '4px'},
-                ),
-            ], style={
-                'backgroundColor': '#ffffff',
-                'border': '1px solid #ddd', 'borderRadius': '4px',
-                'padding': '6px 10px', 'marginBottom': '4px',
-            }))
-        return groups
-
-    @app.callback(
-        Output('y-ind-dropdown', 'value', allow_duplicate=True),
-        Input({'type': 'plot-ind-btn', 'index': ALL}, 'n_clicks'),
-        State('y-ind-dropdown', 'value'),
-        State('y-cat-dropdown', 'value'),
-        State('global-category-dropdown', 'value'),
-        prevent_initial_call=True,
-    )
-    def handle_plot_btn_clicks(n_clicks_list, current_value, y_cat, global_cat):
-        if not n_clicks_list or not any(n for n in n_clicks_list if n):
-            raise dash.exceptions.PreventUpdate
-        trigger = dash.ctx.triggered_id
-        if not isinstance(trigger, dict) or trigger.get('type') != 'plot-ind-btn':
-            raise dash.exceptions.PreventUpdate
-        # Only act when the clicked indicator belongs to the current Y-axis category.
-        if y_cat != global_cat or y_cat == 'Overall MHVI-M Score':
-            raise dash.exceptions.PreventUpdate
-        ind = trigger['index']
-        current = current_value if isinstance(current_value, list) else (
-            [current_value] if current_value else []
-        )
-        if ind in current:
-            raise dash.exceptions.PreventUpdate
-        return current + [ind]
-
-    # ----- Index breakdown -----
-    @app.callback(
-        Output('index-breakdown-container', 'children'),
-        [Input('pr-map', 'clickData'),
-         Input('global-category-dropdown', 'value')]
-    )
-    def update_index_breakdown(clickData, category):
-        if clickData is None or not category:
-            return []
-        fips = clickData['points'][0]['location']
-        df = query_indicator_table(fips, category)
-        if df.empty:
-            return html.Div('No data for this municipality.',
-                            style={'color': '#888'})
-
-        included, missing = [], []
-        for ind, sub in df.groupby('indicator_name'):
-            if ind == 'Subcategory Index Score':
-                continue
-            if sub['value'].notna().any():
-                included.append(ind.replace('_', ' '))
-            else:
-                missing.append(ind.replace('_', ' '))
-
-        def _box(title, items, bg, fg):
-            return html.Div([
-                html.Div(title, style={
-                    'fontWeight': 'bold', 'marginBottom': '4px', 'color': fg,
-                }),
-                html.Ul(
-                    [html.Li(i, style={'fontSize': '12px'}) for i in items]
-                    or [html.Li('—', style={'fontSize': '12px', 'color': '#888'})],
-                    style={'margin': '0', 'paddingLeft': '18px'},
-                ),
-            ], style={
-                'flex': '1', 'backgroundColor': bg, 'border': f'1px solid {fg}',
-                'padding': '8px 12px', 'borderRadius': '6px',
-            })
-
-        return html.Div([
-            _box(f'Included ({len(included)})', included, '#e8f5e9', '#2e7d32'),
-            html.Div(style={'width': '12px'}),
-            _box(f'Missing ({len(missing)})', missing, '#fdecea', '#c62828'),
-        ], style={'display': 'flex', 'flexDirection': 'row'})
-
-    # ----- Modal toggles -----
-    @app.callback(
-        [Output('help-modal', 'style'),
-         Output('data-dictionary-table', 'data')],
-        [Input('open-help-btn', 'n_clicks'),
-         Input('help-modal-close', 'n_clicks')],
-        prevent_initial_call=True,
-    )
-    def toggle_help_modal(open_clicks, close_clicks):
-        trigger = dash.ctx.triggered_id
-        if trigger == 'open-help-btn':
-            rows = (
-                data_dictionary_df.to_dict('records')
-                if data_dictionary_df is not None and not data_dictionary_df.empty
-                else []
-            )
-            return {'display': 'block'}, rows
-        return {'display': 'none'}, dash.no_update
-
-    @app.callback(
-        Output('custom-reports-modal', 'style'),
-        [Input('open-custom-reports-btn', 'n_clicks'),
-         Input('custom-reports-close', 'n_clicks')],
-        prevent_initial_call=True,
-    )
-    def toggle_reports_modal(open_clicks, close_clicks):
-        trigger = dash.ctx.triggered_id
-        if trigger == 'open-custom-reports-btn':
-            return {'display': 'block'}
-        return {'display': 'none'}
-
-    # ----- Custom Report Builder -----
-    def _report_element_block(index, categories):
-        cat_options = [{'label': c.replace('_', ' '), 'value': c} for c in categories]
-        muni_options = _all_municipality_options()
-        return html.Div(
-            id={'type': 'report-element', 'index': index},
-            style={
-                'border': '1px solid #ddd', 'borderRadius': '6px',
-                'padding': '12px', 'marginBottom': '10px',
-                'backgroundColor': '#fafafa',
-            },
-            children=[
-                html.Div([
-                    html.Span(f'Element #{index + 1}', style={'fontWeight': 'bold'}),
-                    html.Button('Remove',
-                                id={'type': 'remove-report-element-btn', 'index': index},
-                                n_clicks=0,
-                                style={
-                                    'marginLeft': 'auto', 'border': '1px solid #c62828',
-                                    'background': 'white', 'color': '#c62828',
-                                    'borderRadius': '4px', 'padding': '2px 8px',
-                                    'cursor': 'pointer', 'fontSize': '12px',
-                                }),
-                ], style={'display': 'flex', 'alignItems': 'center', 'marginBottom': '8px'}),
-
-                html.Div([
-                    html.Div([
-                        html.Label('Element Type', style={'fontSize': '12px'}),
-                        dcc.Dropdown(
-                            id={'type': 'report-element-type', 'index': index},
-                            options=[
-                                {'label': 'Line Graph', 'value': 'graph'},
-                                {'label': 'Data Table', 'value': 'table'},
-                                {'label': 'Index Breakdown Table', 'value': 'breakdown'},
-                            ],
-                            value='graph', clearable=False,
-                        ),
-                    ], style={'flex': '1', 'marginRight': '8px'}),
-                    html.Div([
-                        html.Label('Municipalities', style={'fontSize': '12px'}),
-                        dcc.Dropdown(
-                            id={'type': 'report-county', 'index': index},
-                            options=muni_options, value=[], multi=True,
-                            placeholder='Pick one or more',
-                        ),
-                    ], style={'flex': '2', 'marginRight': '8px'}),
-                    html.Div([
-                        html.Label('Category', style={'fontSize': '12px'}),
-                        dcc.Dropdown(
-                            id={'type': 'report-category', 'index': index},
-                            options=cat_options,
-                            value='Overall MHVI-M Score', clearable=False,
-                        ),
-                    ], style={'flex': '1', 'marginRight': '8px'}),
-                    html.Div([
-                        html.Label('Indicator', style={'fontSize': '12px'}),
-                        dcc.Dropdown(
-                            id={'type': 'report-indicator', 'index': index},
-                            options=[], value=None,
-                            placeholder='—',
-                        ),
-                    ], style={'flex': '2'}),
-                ], style={'display': 'flex', 'marginBottom': '8px'}),
-
-                dcc.Checklist(
-                    id={'type': 'report-options', 'index': index},
-                    options=[
-                        {'label': ' Normalize', 'value': 'normalize'},
-                        {'label': ' Forecast', 'value': 'forecast'},
-                    ],
-                    value=[],
-                    style={'fontSize': '12px', 'marginBottom': '6px'},
-                    labelStyle={'marginRight': '12px'},
-                ),
-
-                html.Div(
-                    id={'type': 'report-element-preview', 'index': index},
-                    style={'backgroundColor': 'white', 'padding': '8px',
-                           'border': '1px solid #eee', 'borderRadius': '4px',
-                           'minHeight': '60px'},
-                ),
-            ],
-        )
-
-    def _all_municipality_options():
-        conn = get_db_connection()
-        try:
-            df = pd.read_sql_query(
-                "SELECT fips_code, name FROM municipalities ORDER BY name", conn
-            )
-        except Exception:
-            return []
-        finally:
-            conn.close()
-        return [{'label': r['name'], 'value': r['fips_code']} for _, r in df.iterrows()]
-
-    @app.callback(
-        Output('report-elements-container', 'children'),
-        [Input('add-report-element-btn', 'n_clicks'),
-         Input({'type': 'remove-report-element-btn', 'index': ALL}, 'n_clicks')],
-        State('report-elements-container', 'children'),
-        State('custom-reports-categories', 'data'),
-        prevent_initial_call=True,
-    )
-    def add_or_remove_report_element(add_clicks, remove_clicks_list, current, categories):
-        trigger = dash.ctx.triggered_id
-        current = current or []
-
-        if trigger == 'add-report-element-btn':
-            # Index is the count of currently rendered elements (so it stays unique
-            # across renders even after removals).
-            idx = len(current)
-            current.append(_report_element_block(idx, categories or []))
-            return current
-
-        if isinstance(trigger, dict) and trigger.get('type') == 'remove-report-element-btn':
-            target_idx = trigger['index']
-            new = []
-            for child in current:
-                # Children may be Dash components or dict reps; both have 'props' on the
-                # rendered side, but here on the server they're component instances.
-                child_id = getattr(child, 'id', None)
-                if isinstance(child, dict):
-                    child_id = child.get('props', {}).get('id')
-                if isinstance(child_id, dict) and child_id.get('index') == target_idx:
-                    continue
-                new.append(child)
-            return new
-
-        raise dash.exceptions.PreventUpdate
-
-    @app.callback(
-        [Output({'type': 'report-indicator', 'index': MATCH}, 'options'),
-         Output({'type': 'report-indicator', 'index': MATCH}, 'value'),
-         Output({'type': 'report-indicator', 'index': MATCH}, 'disabled')],
-        Input({'type': 'report-category', 'index': MATCH}, 'value'),
-    )
-    def update_report_indicator(category):
-        if category in (None, 'Overall MHVI-M Score'):
-            return [], None, True
-        inds = db_metadata.get(category, [])
-        opts = [{'label': i.replace('_', ' '), 'value': i} for i in inds]
-        return opts, (inds[0] if inds else None), False
-
-    @app.callback(
-        Output({'type': 'report-element-preview', 'index': MATCH}, 'children'),
-        [Input({'type': 'report-element-type', 'index': MATCH}, 'value'),
-         Input({'type': 'report-county', 'index': MATCH}, 'value'),
-         Input({'type': 'report-category', 'index': MATCH}, 'value'),
-         Input({'type': 'report-indicator', 'index': MATCH}, 'value'),
-         Input({'type': 'report-options', 'index': MATCH}, 'value')],
-    )
-    def render_report_element(elem_type, fips_list, category, indicator, options):
-        fips_list = fips_list or []
-        if not fips_list:
-            return html.Div('Pick at least one municipality.',
-                            style={'color': '#888', 'fontStyle': 'italic'})
-        if not category:
-            return html.Div('Pick a category.',
-                            style={'color': '#888', 'fontStyle': 'italic'})
-
-        if elem_type == 'breakdown':
-            blocks = []
-            for fips in fips_list:
-                muni = fetch_municipality_name(fips)
-                df = query_indicator_table(fips, category)
-                if df.empty:
-                    blocks.append(html.Div(f'{muni}: no data',
-                                            style={'marginBottom': '6px'}))
-                    continue
-                included, missing = [], []
-                for ind, sub in df.groupby('indicator_name'):
-                    if ind == 'Subcategory Index Score':
-                        continue
-                    (included if sub['value'].notna().any() else missing).append(
-                        ind.replace('_', ' ')
-                    )
-                blocks.append(html.Div([
-                    html.Div(muni, style={'fontWeight': 'bold', 'marginBottom': '4px'}),
-                    html.Div([
-                        html.Span(f'Included ({len(included)}): ',
-                                  style={'color': '#2e7d32', 'fontWeight': 'bold'}),
-                        html.Span(', '.join(included) or '—', style={'fontSize': '12px'}),
-                    ], style={'marginBottom': '2px'}),
-                    html.Div([
-                        html.Span(f'Missing ({len(missing)}): ',
-                                  style={'color': '#c62828', 'fontWeight': 'bold'}),
-                        html.Span(', '.join(missing) or '—', style={'fontSize': '12px'}),
-                    ]),
-                ], style={'marginBottom': '10px'}))
-            return blocks
-
-        # Graph or table both need a (year × muni) frame.
-        is_overall = category == 'Overall MHVI-M Score'
-        if not is_overall and not indicator:
-            return html.Div('Pick an indicator.',
-                            style={'color': '#888', 'fontStyle': 'italic'})
-
-        series_per_muni = {}
-        for fips in fips_list:
-            muni = fetch_municipality_name(fips)
-            df = query_axis_data(
-                fips, category, None if is_overall else indicator
-            )
-            if df is None or df.empty:
-                continue
-            df = df.dropna(subset=['val']).sort_values('year')
-            df['year'] = pd.to_numeric(df['year'], errors='coerce')
-            df = df.dropna(subset=['year'])
-            if df.empty:
-                continue
-            series_per_muni[muni] = df
-
-        if not series_per_muni:
-            return html.Div('No data for the chosen selection.',
-                            style={'color': '#888', 'fontStyle': 'italic'})
-
-        if elem_type == 'graph':
-            fig = go.Figure()
-            for muni, df in series_per_muni.items():
-                years = df['year'].astype(int).tolist()
-                vals = df['val'].astype(float).tolist()
-                plot_vals = (
-                    list(normalize_series(vals)) if 'normalize' in (options or []) else vals
-                )
-                fig.add_trace(go.Scatter(
-                    x=years, y=plot_vals, mode='lines+markers',
-                    name=muni, legendgroup=muni,
-                ))
-                if 'forecast' in (options or []):
-                    fc = forecast_series(years, plot_vals)
-                    if fc is not None:
-                        fc_years, fc_vals = fc
-                        fig.add_trace(go.Scatter(
-                            x=[years[-1]] + list(int(y) for y in fc_years),
-                            y=[plot_vals[-1]] + list(fc_vals),
-                            mode='lines',
-                            name=f'{muni} (forecast)', legendgroup=muni,
-                            line=dict(dash='dash'), showlegend=False,
-                        ))
-            fig.update_layout(
-                margin={'r': 0, 't': 10, 'l': 0, 'b': 0},
-                paper_bgcolor='white', plot_bgcolor='white',
-                xaxis={'title': 'Year', 'type': 'category'},
-                yaxis={'title': 'Normalized (0–100)' if 'normalize' in (options or []) else 'Value'},
-                height=320,
-            )
-            return dcc.Graph(figure=fig)
-
-        # table: pivot to years × munis
-        frames = []
-        for muni, df in series_per_muni.items():
-            sub = df[['year', 'val']].copy()
-            sub['year'] = sub['year'].astype(int)
-            sub = sub.rename(columns={'val': muni}).set_index('year')
-            frames.append(sub)
-        wide = pd.concat(frames, axis=1).sort_index().reset_index()
-        cols = [{'name': str(c), 'id': str(c)} for c in wide.columns]
-        rows = wide.astype(object).where(wide.notna(), '—').to_dict('records')
-        return dash_table.DataTable(
-            data=rows, columns=cols, page_size=10,
-            style_cell={'fontFamily': 'Arial', 'fontSize': '12px',
-                        'padding': '4px', 'textAlign': 'left'},
-            style_header={'backgroundColor': '#4b0082', 'color': 'white',
-                          'fontWeight': 'bold'},
-        )
-
-    # Custom Reports → native browser print. Inline @media print CSS in
-    # MHVIM_Dashboard_App.py (app.index_string) hides everything except the modal.
-    app.clientside_callback(
-        """
-        function(n_clicks) {
-            if(n_clicks > 0) {
-                window.print();
-            }
-            return window.dash_clientside.no_update;
-        }
-        """,
-        Output('export-report-pdf-btn', 'n_clicks_timestamp'),
-        Input('export-report-pdf-btn', 'n_clicks'),
-    )
-
     # ----- Ticket modal -----
     @app.callback(
         [Output('ticket-modal', 'style'),
@@ -2461,6 +1933,9 @@ def register_callbacks(app: dash.Dash, db_metadata: dict, data_dictionary_df=Non
             return dash.no_update, dash.no_update, dash.no_update, dash.no_update
         if not user_id:
             return 'Please log in again.', dash.no_update, dash.no_update, dash.no_update
+        if not mongo_available():
+            return ('Reporting an issue is ' + _UNAVAILABLE['en'] +
+                    '. Please try again later.'), dash.no_update, dash.no_update, dash.no_update
         from tickets.core import create_ticket
         user = get_public_user(user_id)
         email = user['email'] if user else ''

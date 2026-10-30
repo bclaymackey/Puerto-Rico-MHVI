@@ -1,4 +1,4 @@
-"""Support ticket submission for the MHVI-M dashboard.
+"""Support ticket submission for the MHVI dashboard.
 
 Modular home for everything ticket-related, kept separate from auth/chat code
 so it can be navigated, tested, and rolled back independently:

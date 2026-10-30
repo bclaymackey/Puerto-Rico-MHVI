@@ -4,7 +4,8 @@ import unicodedata
 
 import pandas as pd
 
-from data import get_db_connection, ALLOWED_TABLES
+from data import (ALLOWED_TABLES, INDEX_INDICATOR, OVERALL_INDICATOR,
+                  OVERALL_TABLE, get_db_connection, map_year)
 
 from .hyperparameters import RANKING_TOP_N
 from .report_data_builder import get_report_data
@@ -232,18 +233,21 @@ def find_fuzzy_municipality_suggestion(text_lower: str, muni_df: pd.DataFrame):
     return best_name
 
 
+# "Latest" means the year the map shows (data.map_year) — the newest year
+# that is complete for every municipality — so the assistant and the map never
+# disagree. Plain ORDER BY year DESC picked incomplete newest years.
+
 def _fetch_overall_score(conn, fips):
-    """Return (value, year) for the latest overall score, or None."""
+    """Return (value, year) for the overall score in the map's year, or None."""
+    year = map_year(OVERALL_TABLE, OVERALL_INDICATOR)
     df = pd.read_sql(
-        """
+        f"""
         SELECT value, year
-        FROM Overall_MHVI_M_Score
-        WHERE fips_code = ?
-        ORDER BY year DESC
-        LIMIT 1
+        FROM {OVERALL_TABLE}
+        WHERE fips_code = ? AND indicator_name = ? AND year = ?
         """,
         conn,
-        params=(fips,),
+        params=(fips, OVERALL_INDICATOR, year),
     )
     if df.empty:
         return None
@@ -251,17 +255,15 @@ def _fetch_overall_score(conn, fips):
 
 
 def _fetch_category_score(conn, fips, table):
-    """Return (value, year) for the latest category index score, or None."""
+    """Return (value, year) for the category index score in the map's year, or None."""
     df = pd.read_sql(
         f"""
         SELECT value, year
         FROM {table}
-        WHERE fips_code = ? AND indicator_name = ?
-        ORDER BY year DESC
-        LIMIT 1
+        WHERE fips_code = ? AND indicator_name = ? AND year = ?
         """,
         conn,
-        params=(fips, "Subcategory Index Score"),
+        params=(fips, INDEX_INDICATOR, map_year(table, INDEX_INDICATOR)),
     )
     if df.empty:
         return None
@@ -270,16 +272,16 @@ def _fetch_category_score(conn, fips, table):
 
 def _top_municipalities(conn, limit: int = 5) -> pd.DataFrame:
     return pd.read_sql(
-        """
+        f"""
         SELECT m.name, o.value, o.year
-        FROM Overall_MHVI_M_Score o
+        FROM {OVERALL_TABLE} o
         JOIN municipalities m ON o.fips_code = m.fips_code
-        WHERE o.year = (SELECT MAX(year) FROM Overall_MHVI_M_Score)
+        WHERE o.indicator_name = ? AND o.year = ?
         ORDER BY o.value DESC
         LIMIT ?
         """,
         conn,
-        params=(limit,),
+        params=(OVERALL_INDICATOR, map_year(OVERALL_TABLE, OVERALL_INDICATOR), limit),
     )
 
 

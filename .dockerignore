@@ -1,0 +1,17 @@
+# keep secrets and dev-only files out of the image
+.env
+.env*
+!.env.example
+.git/
+.github/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.pytest_cache/
+venv/
+.venv/
+docs/
+tools/
+tests/
+*.ipynb
+qwen_test.py

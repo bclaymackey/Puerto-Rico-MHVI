@@ -3,7 +3,7 @@ import json
 from .llm_caller import call_text_llm
 
 
-_SYSTEM_PROMPT_EN = """You are a public-health analyst writing a Municipality Vulnerability Report for the Puerto Rico Mental Health Vulnerability Index (MHVI-M).
+_SYSTEM_PROMPT_EN = """You are a public-health analyst writing a Municipality Vulnerability Report for the Puerto Rico Mental Health Vulnerability Index (MHVI).
 
 Style rules:
 - Plain, professional language. Avoid jargon. Write for policymakers and the general public.
@@ -32,7 +32,7 @@ Section guidance:
 Output the Markdown only. Do not wrap in code fences."""
 
 
-_SYSTEM_PROMPT_ES = """Eres un analista de salud pública que redacta un Informe de Vulnerabilidad Municipal para el Índice de Vulnerabilidad de Salud Mental de Puerto Rico (MHVI-M).
+_SYSTEM_PROMPT_ES = """Eres un analista de salud pública que redacta un Informe de Vulnerabilidad Municipal para el Índice de Vulnerabilidad de Salud Mental de Puerto Rico (MHVI).
 
 Reglas de estilo:
 - Lenguaje claro y profesional. Evita jerga técnica. Escribe para responsables de políticas públicas y el público general.
