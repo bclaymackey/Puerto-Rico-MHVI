@@ -23,6 +23,8 @@ Details: `change_history/V11_MERGE.md`.
 - The site keeps working when MongoDB is unreachable; chat history, sign-in
   and tickets say "temporarily unavailable". A database outage no longer
   stops the app from starting.
+- "MHVI-M" renamed to "MHVI" throughout; the app now starts with
+  `python MHVI_Dashboard_App.py`.
 - Ready for Hugging Face: port 7860, debug off, Python 3.12 image, partner's
   version requirements kept.
 

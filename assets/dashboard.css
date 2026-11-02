@@ -1,6 +1,6 @@
 /* Dashboard styles (moved from app.py's index_string in V10.1). Dash loads
    every .css file in assets/ automatically. The print rules for the Custom
-   Report Builder stay in MHVIM_Dashboard_App.py's index_string. */
+   Report Builder stay in MHVI_Dashboard_App.py's index_string. */
 
 .Select-menu-outer, .VirtualizedSelectOption { white-space: normal !important; }
 #y-metric-dropdown .Select-menu-outer { max-height: 340px; }

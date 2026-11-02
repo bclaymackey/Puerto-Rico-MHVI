@@ -2,7 +2,7 @@
 
     python tools/smoke_test.py        (from the project folder)
 
-It imports MHVIM_Dashboard_App.py with the real Dash installed and checks the
+It imports MHVI_Dashboard_App.py with the real Dash installed and checks the
 things that otherwise only fail when you launch the server:
 
   1. every component accepts the props it was given
@@ -56,9 +56,9 @@ def ok(msg):
 
 
 # ---------------------------------------------------------------------------
-print("1. Importing MHVIM_Dashboard_App.py (bad component props surface here)")
+print("1. Importing MHVI_Dashboard_App.py (bad component props surface here)")
 try:
-    import MHVIM_Dashboard_App as M
+    import MHVI_Dashboard_App as M
     import dashboard.callbacks as A          # the dashboard's names
     layout = M.app.layout() if callable(M.app.layout) else M.app.layout
 except Exception:

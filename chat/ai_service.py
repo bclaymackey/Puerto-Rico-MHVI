@@ -58,7 +58,7 @@ _REPORT_KEYWORDS_ES = [
 
 
 # ── Answers from the dashboard's own data ───────────────────────────────────
-# The dashboard registers one function at startup (MHVIM_Dashboard_App.py →
+# The dashboard registers one function at startup (MHVI_Dashboard_App.py →
 # dashboard/chat_bridge.py:answer_question). It is asked first, for every
 # message, and returns one of:
 #   {"kind": "grounded", "text": ..., "transcript": ..., "rows": [...], ...}

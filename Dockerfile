@@ -14,4 +14,4 @@ USER user
 
 ENV PORT=7860
 EXPOSE 7860
-CMD ["python", "MHVIM_Dashboard_App.py"]
+CMD ["python", "MHVI_Dashboard_App.py"]

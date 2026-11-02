@@ -1,6 +1,6 @@
 """Puerto Rico MHVI dashboard — start the app here.
 
-    python MHVIM_Dashboard_App.py        then open http://localhost:7860
+    python MHVI_Dashboard_App.py        then open http://localhost:7860
 
 What is where:
     dashboard/   the dashboard: map, right-hand panel, tables, Data Dictionary,

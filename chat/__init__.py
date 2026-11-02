@@ -1,6 +1,6 @@
 """Chat assistant package: persistence, history, LLM, and report flows.
 
-Public API used by the dashboard root (callbacks.py, MHVIM_Dashboard_App.py).
+Public API used by the dashboard root (callbacks.py, MHVI_Dashboard_App.py).
 """
 
 from .ai_service import consume_report, process_chat_message, register_dashboard_answerer

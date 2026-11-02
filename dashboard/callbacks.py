@@ -3,7 +3,7 @@
 These are the V10.1 callbacks, unchanged. They are written with the usual
 ``@app.callback`` decorator; ``app`` here is a recorder that keeps the list,
 and ``register_dashboard_callbacks(real_app)`` hands them all to the real Dash
-app at startup (MHVIM_Dashboard_App.py). That keeps this file identical to the
+app at startup (MHVI_Dashboard_App.py). That keeps this file identical to the
 version that was tested, instead of re-indenting it inside a function.
 """
 from .core import *  # noqa: F401,F403  (constants, helpers, styles)

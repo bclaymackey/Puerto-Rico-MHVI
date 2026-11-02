@@ -12,9 +12,7 @@ pinned: false
 
 AIM-AHEAD project with Grupo Nexos. The goal is to (1) design, from the
 literature, a Mental Health Vulnerability Index (MHVI) for Puerto Rico and
-(2) deploy an interactive dashboard for exploring the data behind it. (The
-project began as an index for minors, "MHVI-M"; that framing has been
-dropped. The entry file keeps its old name, MHVIM_Dashboard_App.py.)
+(2) deploy an interactive dashboard for exploring the data behind it.
 
 The dashboard has a choropleth map of the overall index and its categories
 for Puerto Rico's 78 municipalities, trend charts and tables for every
@@ -31,7 +29,7 @@ MongoDB.
 ## Folder layout
 
 ```
-MHVIM_Dashboard_App.py   start here: builds the app and runs the server
+MHVI_Dashboard_App.py   start here: builds the app and runs the server
 layout.py                the page around the dashboard: sign-in page, account
                          menu, assistant window, "Report an issue" form
 callbacks.py             what those pieces do
@@ -74,7 +72,7 @@ Check with `python --version`.
 3. Start it:
 
    ```
-   python MHVIM_Dashboard_App.py
+   python MHVI_Dashboard_App.py
    ```
 
    then open <http://localhost:7860>.

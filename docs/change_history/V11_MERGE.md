@@ -52,7 +52,7 @@ The V10.1 callbacks keep their `@app.callback` decorators unchanged: in
 
 | File | Change | Why |
 |---|---|---|
-| `MHVIM_Dashboard_App.py` | Builds the page from `dashboard/`, registers the dashboard callbacks and the grounded-answer hook; runs on `0.0.0.0`, port `$PORT` (7860), debug only with `DASH_DEBUG=1`; exposes `server`. | Plug in V10.1; Hugging Face needs 0.0.0.0:7860; debug must be off on a public site. |
+| `MHVI_Dashboard_App.py` | Builds the page from `dashboard/`, registers the dashboard callbacks and the grounded-answer hook; runs on `0.0.0.0`, port `$PORT` (7860), debug only with `DASH_DEBUG=1`; exposes `server`. | Plug in V10.1; Hugging Face needs 0.0.0.0:7860; debug must be off on a public site. |
 | `layout.py` | `build_layout(dashboard_children)` puts the V10.1 dashboard inside the login gate. Account button moved from a fixed corner into the dashboard header (it would have covered the logos). Login page: shown or hidden by `REQUIRE_LOGIN`, plus a "← Back to the dashboard" link when sign-in is optional. V6 builders removed. | Plug in V10.1; optional sign-in. |
 | `callbacks.py` | Gate honours `REQUIRE_LOGIN`; new `request_login` and `account_button_label` ("👤 Sign in" / "⚙ Settings"); settings panel opens only when signed in. `generate_ai_response` reads `dashboard-state`, passes it on, and renders grounded answers and "export this conversation". Reset also starts a new chat. Chat history panel says "Sign in to save…" for anonymous visitors. MongoDB checks (below). V6 dashboard callbacks removed. | Optional sign-in; Exercise 3 fixes in the new window; database resilience. |
 | `chat/ai_service.py` | `register_dashboard_answerer()` hook; `process_chat_message(..., dashboard_state=None)` asks it first. Grounded answers and export requests need no database or AI key; their history is saved when MongoDB is up. Other questions return "temporarily unavailable" when it is down. Report message names the data year. | Answers the study's value questions from the chart's own numbers; works during outages. |
@@ -63,10 +63,10 @@ The V10.1 callbacks keep their `@app.callback` decorators unchanged: in
 | `tickets/routes.py` | Admin provisioning at start-up is skipped (with a log line) when MongoDB is unreachable. | **Deviation:** a database outage otherwise stopped the whole site from starting. |
 | `auth/policy.py` (new) | `login_required()` reads `REQUIRE_LOGIN` (default `1`). | One switch for optional / mandatory sign-in. |
 
-Naming: "MHVI-M" on the login page, the admin page, in the report prompt and
-in docstrings now reads "MHVI", since the project dropped the "for Minors"
-framing. The entry file keeps its name (`MHVIM_Dashboard_App.py`) so
-existing commands still work.
+Naming: the project dropped the "for Minors" framing, so "MHVI-M" became
+"MHVI" on the login page, the admin page, in the report prompt and in
+docstrings. The entry file was renamed to `MHVI_Dashboard_App.py`, and
+the stale notebook copy `MHVIM_Dashboard_App.ipynb` was removed.
 
 When MongoDB is down: the dashboard is shown even with `REQUIRE_LOGIN=1`
 (a sign-in form that cannot work is not shown); the Sign in tooltip, sign-in
