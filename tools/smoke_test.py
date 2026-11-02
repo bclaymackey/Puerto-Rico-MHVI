@@ -153,7 +153,10 @@ for key, cb in dash_app.callback_map.items():
     for dep in cb.get('state', []):
         check_dep(name, dep.get('id'), dep.get('property'), 'State')
 
-    for out in cb.get('output', '').split('...'):
+    output = cb.get('output')
+    if not isinstance(output, str):
+        output = key  # newer Dash keeps a list here; the key has the same text
+    for out in output.split('...'):
         out = out.strip('.')
         if not out or '.' not in out:
             continue
