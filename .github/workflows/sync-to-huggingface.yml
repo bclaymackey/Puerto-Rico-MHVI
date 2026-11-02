@@ -1,16 +1,30 @@
-   name: Sync to Hugging Face Space
-   on:
-     push:
-       branches: [main]
-     workflow_dispatch:
-   jobs:
-     sync:
-       runs-on: ubuntu-latest
-       steps:
-         - uses: actions/checkout@v6
-         - uses: huggingface/hub-sync@v0.1.0
-           with:
-             github_repo_id: ${{ github.repository }}
-             huggingface_repo_id: bcmackey/Puerto-Rico-MHVI-Dashboard
-             hf_token: ${{ secrets.HF_TOKEN }}
-             space_sdk: docker
+name: Sync to Hugging Face Space
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Upload the repository to the Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          pip install --quiet huggingface_hub
+          python - <<'PYEOF'
+          from huggingface_hub import HfApi
+          HfApi().upload_folder(
+              folder_path=".",
+              repo_id="bcmackey/Puerto-Rico-MHVI-Dashboard",
+              repo_type="space",
+              ignore_patterns=[".git/*", ".github/*"],
+              delete_patterns=["*"],
+              commit_message="Sync from GitHub main",
+          )
+          print("Uploaded to the Space")
+          PYEOF
